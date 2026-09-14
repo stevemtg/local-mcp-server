@@ -97,7 +97,7 @@ tools are auto-approved; the stateful `index_codebase` is **not**:
   "mcpServers": {
     "codebase-semantic-index": {
       "command": "py",
-      "args": ["C:/absolute/path/to/local-mcp-semantic-index/server.py"],
+      "args": ["E:/local-mcp-semantic-index/server.py"],
       "env": {
         "OLLAMA_URL": "http://localhost:11434",
         "EMBED_MODEL": "nomic-embed-text"
