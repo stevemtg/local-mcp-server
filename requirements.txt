@@ -1,0 +1,2 @@
+# Official Model Context Protocol Python SDK (pins anyio/httpx/pydantic).
+mcp>=2.0.0
