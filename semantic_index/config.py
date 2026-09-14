@@ -90,3 +90,8 @@ MMR_LAMBDA: float = float(os.environ.get("MMR_LAMBDA", "0.5"))
 MMR_POOL_FACTOR: int = int(os.environ.get("MMR_POOL_FACTOR", "6"))
 # Semantic snippets are truncated to this many lines; full source stays authoritative.
 SNIPPET_MAX_LINES: int = int(os.environ.get("SNIPPET_MAX_LINES", "24"))
+# Max query parts (chunks) embedded per semantic_search_similar call. The
+# queried source is split with the same chunker as indexing so every part
+# fits the embedding model's context window; sources yielding more parts than
+# this cap use only the first N.
+SIMILAR_QUERY_MAX_PARTS: int = int(os.environ.get("SIMILAR_QUERY_MAX_PARTS", "12"))

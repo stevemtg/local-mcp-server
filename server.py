@@ -115,8 +115,12 @@ def semantic_search_similar(
     following the same pattern, or other places with the same kind of logic.
     The query is built from the CURRENT on-disk source at ``path`` (optionally
     narrowed to start_line..end_line), so it always reflects reality even if
-    the index is stale. Same rules as semantic_search: candidates only; verify
-    by reading the actual files before asserting anything or editing.
+    the index is stale. The queried source is split into chunks (same chunker
+    as indexing), each chunk is embedded separately, per-chunk results are
+    merged keeping the best score per chunk, and chunks overlapping the
+    queried range are excluded. Same rules as semantic_search: candidates
+    only; verify by reading the actual files before asserting anything or
+    editing.
     """
     logger.info("semantic_search_similar(%s:%s-%s, %s)", path, start_line, end_line, directory_path)
     return indexer.similar(

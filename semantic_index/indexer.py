@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .chunker import chunk_code, embed_text
-from .config import DEFAULT_SEARCH_LIMIT, EMBED_MODEL, SNIPPET_MAX_LINES
-from .crawler import hash_file, iter_source_files, read_text
+from .config import (
+    DEFAULT_SEARCH_LIMIT,
+    EMBED_MODEL,
+    SIMILAR_QUERY_MAX_PARTS,
+    SNIPPET_MAX_LINES,
+)
+from .crawler import classify_language, hash_file, iter_source_files, read_text
 from .embedder import OllamaEmbedder
 from .store import StoredChunk, VectorStore
 
@@ -162,9 +168,12 @@ class Indexer:
     ) -> dict:
         """Find chunks similar to the CURRENT source at ``path``[:lines].
 
-        The query vector is built from the live file on disk (not from stored
-        embeddings), keeping the filesystem authoritative. Chunks overlapping
-        the queried range are excluded from results.
+        The queried source is split with the same structure-aware chunker
+        used for indexing, every part is embedded in its own Ollama request
+        (so large files can never exceed the embedding model's context
+        window), and the per-part results are merged keeping the best score
+        per chunk. The live file on disk stays authoritative. Chunks
+        overlapping the queried range are excluded from results.
         """
         root = Path(directory_path).expanduser().resolve()
         if not root.is_dir():
@@ -186,17 +195,52 @@ class Indexer:
             text = read_text(target)
             lines = text.splitlines()
             rel = target.relative_to(root).as_posix()
+            language = classify_language(target)
             if start_line is not None:
                 s = max(1, start_line)
                 e = end_line or len(lines)
                 text = "\n".join(lines[s - 1 : e])
+                offset = s - 1
                 exclude: list[tuple[str, int, int]] = [(rel, s, e)]
             else:
+                offset = 0
                 exclude = [(rel, 1, len(lines))]
-            query_vector = self.embedder.embed_one(
-                f"Find code similar to this {target.suffix} source:\n{text}"
+            # Chunk the query source like at index time and embed each part
+            # separately: a single whole-file request would exceed the
+            # embedding model's context window for larger files.
+            parts = chunk_code(text, language)
+            if len(parts) > SIMILAR_QUERY_MAX_PARTS:
+                logger.warning(
+                    "Query source %s yields %d parts; capping at %d",
+                    rel,
+                    len(parts),
+                    SIMILAR_QUERY_MAX_PARTS,
+                )
+                parts = parts[:SIMILAR_QUERY_MAX_PARTS]
+            vectors = self.embedder.embed_many(
+                [
+                    embed_text(
+                        replace(
+                            p,
+                            start_line=p.start_line + offset,
+                            end_line=p.end_line + offset,
+                        ),
+                        rel,
+                        language,
+                    )
+                    for p in parts
+                ]
             )
-            hits = store.search(query_vector, max(1, limit), exclude=exclude)
+            merged: dict[tuple[str, int, int], StoredChunk] = {}
+            for query_vector in vectors:
+                for hit in store.search(query_vector, max(1, limit), exclude=exclude):
+                    key = (hit.file_path, hit.start_line, hit.end_line)
+                    prev = merged.get(key)
+                    if prev is None or hit.score > prev.score:
+                        merged[key] = hit
+            hits = sorted(
+                merged.values(), key=lambda c: c.score, reverse=True
+            )[: max(1, limit)]
             return {
                 "path": path,
                 "range": [start_line, end_line] if start_line else None,
