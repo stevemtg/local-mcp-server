@@ -83,6 +83,31 @@ def cosine(a: list[float], b: list[float]) -> float:
     return dot / ((norm_a**0.5) * (norm_b**0.5))
 
 
+def read_only_indexed_hash(project_root: Path, rel_path: str) -> str | None:
+    """Read-only lookup of a file's stored content hash (never writes).
+
+    Checks for the database file BEFORE connecting, opens SQLite in read-only
+    URI mode, and returns ``None`` when the database is missing, the schema
+    table is missing, or no record exists — callers map ``None`` to
+    ``not_indexed``. Never creates a database, directory, schema, or WAL file.
+    """
+    db_path = project_root / INDEX_DIR_NAME / DB_FILE_NAME
+    if not db_path.is_file():
+        return None
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)
+        row = conn.execute(
+            "SELECT content_hash FROM files WHERE path = ?", (rel_path,)
+        ).fetchone()
+        return row[0] if row else None
+    except sqlite3.Error:
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 class VectorStore:
     """File-based vector index stored at ``<root>/.semantic_index/index.db``."""
 

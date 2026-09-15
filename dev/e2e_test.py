@@ -54,6 +54,7 @@ async def main() -> None:
                 "index_codebase",
                 "semantic_search",
                 "semantic_search_similar",
+                "get_symbol_context",
                 "get_index_status",
             }
 
@@ -96,6 +97,26 @@ async def main() -> None:
             top = res[0]["results"][0] if res and res[0].get("results") else {}
             print("similar top:", top.get("path"), top.get("symbol"), top.get("score"))
             assert top.get("path"), res  # returns something; same-range chunks were excluded
+
+            print("\n--- get_symbol_context: app.py:7 (compute_retry_delay) ---")
+            res = await call("get_symbol_context", directory_path=str(sample), path="app.py", line=7)
+            ctx = res[0]
+            print(json.dumps(ctx, indent=2)[:1500])
+            assert ctx["path"] == "app.py", ctx
+            assert ctx["absolutePath"] == str(sample / "app.py"), ctx
+            assert ctx["requestedLine"] == 7 and ctx["language"] == "python"
+            assert ctx["symbol"]["name"] == "compute_retry_delay", ctx["symbol"]
+            assert ctx["symbol"]["kind"] == "function", ctx["symbol"]
+            assert [ctx["symbol"]["startLine"], ctx["symbol"]["endLine"]] == [5, 11], ctx["symbol"]
+            assert ctx["imports"] == [{"line": 7, "text": "import random"}], ctx["imports"]
+            assert ctx["references"] == []  # only occurrence is the excluded definition
+            assert ctx["relatedTests"] == []
+            assert ctx["indexState"] == "current", ctx["indexState"]
+            assert ctx["note"] == (
+                "Live source is authoritative. References are lexical matches, "
+                "not proven callers or callees."
+            )
+            print("(get_symbol_context answered without any Ollama request)")
 
             print("\n--- get_index_status (after) ---")
             print(json.dumps(await call("get_index_status", directory_path=str(sample)), indent=2))

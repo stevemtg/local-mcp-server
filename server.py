@@ -1,10 +1,11 @@
 """Codebase Semantic Index — MCP server entry point (stdio transport).
 
-Exposes four tools to any MCP client (e.g. the Cline extension in VS Code):
+Exposes five tools to any MCP client (e.g. the Cline extension in VS Code):
 
 * index_codebase(directory_path)                        -> build/refresh the index
 * semantic_search(query, directory_path, ...)           -> discovery by meaning
 * semantic_search_similar(path, directory_path, ...)    -> find similar code
+* get_symbol_context(directory_path, path, line, ...)   -> live-source context pack
 * get_index_status(directory_path)                      -> index health/metadata
 
 Policy: semantic results are CANDIDATES ONLY. The live filesystem is always
@@ -37,11 +38,14 @@ server = MCPServer(
         "Call index_codebase once per project to build the .semantic_index "
         "vector database, then use semantic_search to LOCATE candidate files/"
         "symbols by concept and semantic_search_similar to find code similar "
-        "to a known snippet. Results are candidates only: ALWAYS read the "
-        "current source with exact tools (read_file, grep/rg, symbol search) "
-        "before concluding behavior or editing. If indexed content and the "
-        "current source disagree, the current source wins. Prefer exact "
-        "search when the user already gave a specific filename, symbol, "
+        "to a known snippet. Once you know the interesting file:line, call "
+        "get_symbol_context (read-only) for a live-source context pack of the "
+        "symbol there (imports, lexical references, related tests, freshness) "
+        "before concluding or editing. Results are candidates only: ALWAYS "
+        "read the current source with exact tools (read_file, grep/rg, symbol "
+        "search) before concluding behavior or editing. If indexed content "
+        "and the current source disagree, the current source wins. Prefer "
+        "exact search when the user already gave a specific filename, symbol, "
         "error message, route, or exact string."
     ),
 )
@@ -126,6 +130,32 @@ def semantic_search_similar(
     return indexer.similar(
         directory_path, path, start_line=start_line, end_line=end_line, limit=limit
     )
+
+
+@server.tool()
+def get_symbol_context(
+    directory_path: str,
+    path: str,
+    line: int,
+    max_references: int = 12,
+) -> dict:
+    """READ-ONLY context pack for the symbol at ``path:line`` (live source).
+
+    Use this AFTER semantic_search / semantic_search_similar have located an
+    interesting file and line, to gather focused context BEFORE drawing
+    conclusions or editing code. Returns the containing symbol (name, kind,
+    full line range, compact declaration, bounded snippet), the file's
+    imports, exact identifier references elsewhere in the project (relative
+    path, line, one-line preview), test-like files referencing the symbol,
+    and index freshness (current/stale/not_indexed). Everything is built
+    from the CURRENT on-disk source, which is authoritative; the index is
+    consulted read-only only for the freshness report.
+
+    The returned ``references`` are lexical identifier matches only — they
+    are candidates, and must NOT be described as proven callers or callees.
+    """
+    logger.info("get_symbol_context(%s:%s, %s)", path, line, directory_path)
+    return indexer.symbol_context(directory_path, path, line, max_references)
 
 
 @server.tool()

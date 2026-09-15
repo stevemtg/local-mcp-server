@@ -90,6 +90,18 @@ MMR_LAMBDA: float = float(os.environ.get("MMR_LAMBDA", "0.5"))
 MMR_POOL_FACTOR: int = int(os.environ.get("MMR_POOL_FACTOR", "6"))
 # Semantic snippets are truncated to this many lines; full source stays authoritative.
 SNIPPET_MAX_LINES: int = int(os.environ.get("SNIPPET_MAX_LINES", "24"))
+# --- get_symbol_context settings ---------------------------------------------
+# Default cap on lexical references returned by get_symbol_context.
+DEFAULT_MAX_REFERENCES: int = int(os.environ.get("DEFAULT_MAX_REFERENCES", "12"))
+# Hard ceiling for the caller-supplied max_references argument.
+MAX_REFERENCES_CAP: int = int(os.environ.get("MAX_REFERENCES_CAP", "50"))
+# Context snippets/window chunks are capped to this many lines.
+CONTEXT_SNIPPET_MAX_LINES: int = int(os.environ.get("CONTEXT_SNIPPET_MAX_LINES", "40"))
+# Cap on import/include/use statements listed per file.
+CONTEXT_IMPORTS_MAX: int = int(os.environ.get("CONTEXT_IMPORTS_MAX", "20"))
+# Reference previews and declaration headers are capped at this many chars.
+CONTEXT_PREVIEW_MAX_CHARS: int = int(os.environ.get("CONTEXT_PREVIEW_MAX_CHARS", "240"))
+
 # Max query parts (chunks) embedded per semantic_search_similar call. The
 # queried source is split with the same chunker as indexing so every part
 # fits the embedding model's context window; sources yielding more parts than

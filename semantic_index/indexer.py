@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .chunker import chunk_code, embed_text
 from .config import (
+    DEFAULT_MAX_REFERENCES,
     DEFAULT_SEARCH_LIMIT,
     EMBED_MODEL,
     SIMILAR_QUERY_MAX_PARTS,
@@ -17,6 +18,7 @@ from .config import (
 from .crawler import classify_language, hash_file, iter_source_files, read_text
 from .embedder import OllamaEmbedder
 from .store import StoredChunk, VectorStore
+from .symbol_context import build_symbol_context
 
 logger = logging.getLogger("semantic_index.indexer")
 
@@ -250,6 +252,24 @@ class Indexer:
             }
         finally:
             store.close()
+
+    def symbol_context(
+        self,
+        directory_path: str,
+        path: str,
+        line: int,
+        max_references: int = DEFAULT_MAX_REFERENCES,
+    ) -> dict:
+        """Read-only context pack for the live symbol at ``path:line``.
+
+        Delegates to ``semantic_index.symbol_context``: no embeddings, no
+        network, no index writes. Live source is authoritative; returned
+        references are lexical matches, not proven callers or callees.
+        """
+        root = Path(directory_path).expanduser().resolve()
+        if not root.is_dir():
+            raise ValueError(f"Not a directory: {directory_path}")
+        return build_symbol_context(root, path, line, max_references)
 
     @staticmethod
     def _as_result(root: Path, rank: int, c: StoredChunk) -> dict:

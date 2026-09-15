@@ -42,12 +42,13 @@ are no other runtime dependencies.
 
 | Module | Responsibility |
 | --- | --- |
-| `server.py` | MCP server init + registration of the four tools; stdio transport. |
+| `server.py` | MCP server init + registration of the five tools; stdio transport. |
 | `semantic_index/crawler.py` | Recursive walk (prunes `.git`, `node_modules`, `dist`, `__pycache__`, ...), SHA-256 hashing, language detection. |
 | `semantic_index/chunker.py` | Structure-aware chunking: indentation-based blocks for Python, regex header + brace-matched blocks for JS/TS/Go/Rust/Java/Kotlin/C/C++/C#, line-window fallback. Oversized blocks are split per method. |
 | `semantic_index/embedder.py` | Local Ollama client (`POST /api/embeddings`, model `nomic-embed-text`) with retry/backoff and a thread pool. |
 | `semantic_index/store.py` | SQLite vector store in `<project>/.semantic_index/index.db`; float32-packed embeddings, cosine scoring + MMR (maximal marginal relevance) diversification. |
 | `semantic_index/indexer.py` | Orchestration: change detection by hash, chunk+embed changed files, stale-entry cleanup, agent-friendly result shaping, status. |
+| `semantic_index/symbol_context.py` | Read-only context packs for `get_symbol_context`: live-source symbol selection, import extraction, lexical reference scanning, test grouping, freshness — no embeddings, no writes. |
 
 Index state lives **inside the indexed project** at `<project>/.semantic_index/`
 (`index.db` plus SQLite WAL sidecar files). Re-running `index_codebase`
@@ -62,6 +63,7 @@ automatic re-embed.
 | `index_codebase` | no (writes `.semantic_index/`) | `directory_path: string` | `{files_embedded, files_unchanged_skipped, files_removed, files_failed, total_chunks, full_reindex, indexed_at}` |
 | `semantic_search` | yes | `query: string`, `directory_path: string`, `limit?`, `path_filter?`, `min_score?` | `{results: [{path, absolutePath, startLine, endLine, symbol, score, snippet, reason}]}` |
 | `semantic_search_similar` | yes | `directory_path: string`, `path: string`, `start_line?`, `end_line?`, `limit?` | same `results` shape, ranked by similarity to the **current** source at `path` |
+| `get_symbol_context` | yes | `directory_path: string`, `path: string`, `line: int`, `max_references?` (default 12, clamped 1–50) | context pack for the live symbol at `path:line`: `{symbol: {name, kind, startLine, endLine, declaration}, snippet, imports, references, relatedTests, indexState, note}` — built from **live source**; `references` are lexical matches, not proven callers/callees |
 | `get_index_status` | yes | `directory_path: string` | `{indexed, num_files, num_chunks, embedding_model, embedding_dim, created_at, last_indexed_at}` |
 
 ## Intended workflow (hybrid search policy)
@@ -81,6 +83,13 @@ semantic discovery → exact source verification → conclusion → edit → val
   actually does. **The filesystem is authoritative: if indexed content and the
   current source disagree, the current source wins.** Always read the current
   file before editing.
+- **Symbol context** (`get_symbol_context`, read-only) is the step *after*
+  semantic discovery and *before* editing: given a known `file:line`, it
+  returns a live-source context pack — the containing symbol (name, kind,
+  range, declaration, snippet), the file's imports, exact lexical
+  `references` (identifier matches sorted by path/line), `relatedTests`,
+  and `indexState` freshness. Its references are lexical candidates only —
+  never describe them as proven callers or callees.
 - **Validation** via tests / build / lint / typecheck after changes.
 
 A copy of this policy ships as `.clinerules/10-semantic-code-search.md` —
@@ -105,6 +114,7 @@ tools are auto-approved; the stateful `index_codebase` is **not**:
       "autoApprove": [
         "semantic_search",
         "semantic_search_similar",
+        "get_symbol_context",
         "get_index_status"
       ]
     }
@@ -117,9 +127,11 @@ e.g. `"command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Python\\Python313\
 
 Then, in Cline chat: *"Fix the issue where users occasionally get logged out
 after refreshing their profile"* → Cline should call `semantic_search` with
-focused queries ("profile refresh flow", "session state", "logout"), open the
-returned candidate files to verify the real behavior, trace callers with
-exact search, fix the cause, and run the tests.
+focused queries ("profile refresh flow", "session state", "logout"), call
+`get_symbol_context` on the located `file:line` for a live-source context
+pack (symbol, imports, lexical references, related tests), open the returned
+candidate files to verify the real behavior, trace callers with exact
+search, fix the cause, and run the tests.
 
 ## Configuration (environment variables)
 
@@ -136,6 +148,11 @@ exact search, fix the cause, and run the tests.
 | `MMR_LAMBDA` | `0.5` | Relevance(1.0) ↔ diversity(0.0) trade-off |
 | `MMR_POOL_FACTOR` | `6` | MMR re-ranks the raw top `limit × factor` hits |
 | `SNIPPET_MAX_LINES` | `24` | Snippets truncated to this many lines |
+| `DEFAULT_MAX_REFERENCES` | `12` | Default cap on `get_symbol_context` references |
+| `MAX_REFERENCES_CAP` | `50` | Hard ceiling for the `max_references` argument |
+| `CONTEXT_SNIPPET_MAX_LINES` | `40` | Max lines in a `get_symbol_context` snippet/window |
+| `CONTEXT_IMPORTS_MAX` | `20` | Max import entries listed per file |
+| `CONTEXT_PREVIEW_MAX_CHARS` | `240` | Char cap for previews and declaration headers |
 
 ## Error handling
 
