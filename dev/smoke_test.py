@@ -96,8 +96,24 @@ with tempfile.TemporaryDirectory() as td:
     print("STORE STATS:", store.stats())
     store.close()
 
+# ---- crawler ignores generated Unity Library files -------------------------
+from semantic_index.crawler import hash_file, iter_source_files  # noqa: E402
+
+with tempfile.TemporaryDirectory(prefix="unity_project_") as td:
+    unity_root = Path(td)
+    (unity_root / "Assets" / "Scripts").mkdir(parents=True)
+    (unity_root / "Assets" / "Scripts" / "Player.cs").write_text(
+        "public class Player {}\n", encoding="utf-8"
+    )
+    (unity_root / "Library" / "PackageCache").mkdir(parents=True)
+    (unity_root / "Library" / "PackageCache" / "Generated.cs").write_text(
+        "public class Generated {}\n", encoding="utf-8"
+    )
+
+    crawled_paths = {item.rel_path for item in iter_source_files(unity_root)}
+    assert crawled_paths == {"Assets/Scripts/Player.cs"}, crawled_paths
+
 # ---- get_symbol_context (offline: no Ollama, no embedding at all) ----------
-from semantic_index.crawler import hash_file  # noqa: E402
 from semantic_index.indexer import Indexer  # noqa: E402
 
 CTX_SERVICE = (

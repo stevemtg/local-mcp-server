@@ -43,7 +43,7 @@ are no other runtime dependencies.
 | Module | Responsibility |
 | --- | --- |
 | `server.py` | MCP server init + registration of the five tools; stdio transport. |
-| `semantic_index/crawler.py` | Recursive walk (prunes `.git`, `node_modules`, `dist`, `__pycache__`, ...), SHA-256 hashing, language detection. |
+| `semantic_index/crawler.py` | Recursive walk (prunes `.git`, `node_modules`, Unity `Library`, `dist`, `__pycache__`, ...), SHA-256 hashing, language detection. |
 | `semantic_index/chunker.py` | Structure-aware chunking: indentation-based blocks for Python, regex header + brace-matched blocks for JS/TS/Go/Rust/Java/Kotlin/C/C++/C#, line-window fallback. Oversized blocks are split per method. |
 | `semantic_index/embedder.py` | Local Ollama client (`POST /api/embeddings`, model `nomic-embed-text`) with retry/backoff and a thread pool. |
 | `semantic_index/store.py` | SQLite vector store in `<project>/.semantic_index/index.db`; float32-packed embeddings, cosine scoring + MMR (maximal marginal relevance) diversification. |

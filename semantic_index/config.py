@@ -40,6 +40,7 @@ IGNORED_DIRS: frozenset[str] = frozenset(
         ".ruff_cache",
         ".next",
         ".nuxt",
+        "Library",  # Unity-generated asset/import cache
         "coverage",
         ".tox",
         ".eggs",
