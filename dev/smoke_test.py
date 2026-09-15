@@ -130,11 +130,24 @@ CTX_TEST = (
     "    assert service.compute_retry_delay(1) == 2\n"
 )
 CTX_NOTES = "# just a comment\n# another comment\n"
+CTX_MULTILINE = (
+    "def combine(\n"
+    "    left: int,\n"
+    "    right: int,\n"
+    ") -> int:\n"
+    "    total = left + right\n"
+    "    return total\n"
+    "\n"
+    "\n"
+    "def after():\n"
+    "    return 0\n"
+)
 
 ctx_root = Path(tempfile.mkdtemp(prefix="ctx_project_"))
 (ctx_root / "service.py").write_text(CTX_SERVICE, encoding="utf-8")
 (ctx_root / "caller.py").write_text(CTX_CALLER, encoding="utf-8")
 (ctx_root / "notes.py").write_text(CTX_NOTES, encoding="utf-8")
+(ctx_root / "multiline.py").write_text(CTX_MULTILINE, encoding="utf-8")
 (ctx_root / "tests").mkdir()
 (ctx_root / "tests" / "test_service.py").write_text(CTX_TEST, encoding="utf-8")
 
@@ -186,6 +199,21 @@ assert res_fb["references"] == []
 # generic window-chunk names ('lines-1-2') count as unnamed too
 res_notes = ix.symbol_context(str(ctx_root), "notes.py", 1)
 assert res_notes["symbol"]["name"] is None and res_notes["symbol"]["kind"] == "block"
+
+# multiline signatures remain part of the symbol, and an interior body line
+# resolves to that symbol rather than an unnamed fallback window.
+res_multiline = ix.symbol_context(str(ctx_root), "multiline.py", 5)
+assert res_multiline["symbol"]["name"] == "combine"
+assert res_multiline["symbol"]["kind"] == "function"
+assert [
+    res_multiline["symbol"]["startLine"],
+    res_multiline["symbol"]["endLine"],
+] == [1, 8]
+assert [
+    res_multiline["snippet"]["startLine"],
+    res_multiline["snippet"]["endLine"],
+] == [1, 8]
+assert "return total" in res_multiline["snippet"]["text"]
 
 # reference limit is enforced (max_references clamped to >= 1)
 res_lim = ix.symbol_context(str(ctx_root), "service.py", 6, max_references=1)

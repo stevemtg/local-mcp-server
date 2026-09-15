@@ -13,8 +13,10 @@ Line numbers returned are 1-based and inclusive.
 
 from __future__ import annotations
 
+import io
 import logging
 import re
+import tokenize
 from dataclasses import dataclass
 
 from .config import FALLBACK_CHUNK_LINES, FALLBACK_CHUNK_OVERLAP, MAX_CHUNK_LINES
@@ -199,9 +201,26 @@ def _find_brace_end(masked: list[str], header_line: int) -> int:
     return len(masked) - 1
 
 
+def _find_py_header_end(lines: list[str], header_line: int) -> int:
+    """Return the final physical line of a Python definition header."""
+    source = "\n".join(lines[header_line:])
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            # NL marks a continued physical line; NEWLINE ends the complete
+            # logical header, including multiline parameters and annotations.
+            if token.type == tokenize.NEWLINE:
+                return header_line + token.end[0] - 1
+    except (IndentationError, tokenize.TokenError):
+        # Keep the chunker best-effort for incomplete or temporarily invalid
+        # source. The indentation scan below will retain its old behavior.
+        pass
+    return header_line
+
+
 def _find_py_end(lines: list[str], header_line: int, indent: int) -> int:
     """Python block end: first following non-blank line at indent <= own."""
-    for idx in range(header_line + 1, len(lines)):
+    logical_header_end = _find_py_header_end(lines, header_line)
+    for idx in range(logical_header_end + 1, len(lines)):
         stripped = lines[idx].strip()
         if not stripped:
             continue

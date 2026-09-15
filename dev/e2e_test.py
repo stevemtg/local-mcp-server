@@ -20,7 +20,9 @@ SAMPLE_PY = '''
 """Sample project."""
 
 
-def compute_retry_delay(attempt: int) -> float:
+def compute_retry_delay(
+    attempt: int,
+) -> float:
     """Exponential backoff with jitter."""
     import random
 
@@ -92,23 +94,23 @@ async def main() -> None:
             print("filtered top:", top.get("path"), top.get("symbol"), top.get("score"))
             assert top.get("path") == "config.ts", res
 
-            print("\n--- semantic_search_similar: similar to app.py:5-11 ---")
-            res = await call("semantic_search_similar", directory_path=str(sample), path="app.py", start_line=5, end_line=11, limit=3)
+            print("\n--- semantic_search_similar: similar to app.py:5-13 ---")
+            res = await call("semantic_search_similar", directory_path=str(sample), path="app.py", start_line=5, end_line=13, limit=3)
             top = res[0]["results"][0] if res and res[0].get("results") else {}
             print("similar top:", top.get("path"), top.get("symbol"), top.get("score"))
             assert top.get("path"), res  # returns something; same-range chunks were excluded
 
-            print("\n--- get_symbol_context: app.py:7 (compute_retry_delay) ---")
-            res = await call("get_symbol_context", directory_path=str(sample), path="app.py", line=7)
+            print("\n--- get_symbol_context: app.py:11 (compute_retry_delay) ---")
+            res = await call("get_symbol_context", directory_path=str(sample), path="app.py", line=11)
             ctx = res[0]
             print(json.dumps(ctx, indent=2)[:1500])
             assert ctx["path"] == "app.py", ctx
             assert ctx["absolutePath"] == str(sample / "app.py"), ctx
-            assert ctx["requestedLine"] == 7 and ctx["language"] == "python"
+            assert ctx["requestedLine"] == 11 and ctx["language"] == "python"
             assert ctx["symbol"]["name"] == "compute_retry_delay", ctx["symbol"]
             assert ctx["symbol"]["kind"] == "function", ctx["symbol"]
-            assert [ctx["symbol"]["startLine"], ctx["symbol"]["endLine"]] == [5, 11], ctx["symbol"]
-            assert ctx["imports"] == [{"line": 7, "text": "import random"}], ctx["imports"]
+            assert [ctx["symbol"]["startLine"], ctx["symbol"]["endLine"]] == [5, 13], ctx["symbol"]
+            assert ctx["imports"] == [{"line": 9, "text": "import random"}], ctx["imports"]
             assert ctx["references"] == []  # only occurrence is the excluded definition
             assert ctx["relatedTests"] == []
             assert ctx["indexState"] == "current", ctx["indexState"]
