@@ -16,10 +16,18 @@ from __future__ import annotations
 
 import logging
 import sys
+from typing import Annotated
 
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
+from pydantic import Field
 
-from semantic_index.config import DEFAULT_SEARCH_LIMIT
+from semantic_index.config import (
+    DEFAULT_MAX_REFERENCES,
+    DEFAULT_SEARCH_LIMIT,
+    MAX_REFERENCES_CAP,
+    MAX_SEARCH_LIMIT,
+)
 from semantic_index.indexer import Indexer
 
 # stdout is reserved for JSON-RPC framing — all logging must go to stderr.
@@ -30,23 +38,36 @@ logging.basicConfig(
 )
 logger = logging.getLogger("semantic_index.server")
 
+ProjectDirectory = Annotated[str, Field(
+    min_length=1, description="Absolute root of the project to inspect, e.g. C:/work/project."
+)]
+SourcePath = Annotated[str, Field(
+    min_length=1,
+    description="Existing source file relative to directory_path, e.g. app.py or Assets/Player.cs. Use the result's path, not absolutePath. Root escapes and absolute paths are rejected."
+)]
+SearchLimit = Annotated[int, Field(
+    ge=1, le=MAX_SEARCH_LIMIT,
+    description="Maximum number of candidate chunks to return; keep small for focused discovery."
+)]
+READ_ONLY_ANNOTATIONS = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+
 server = MCPServer(
     name="codebase-semantic-index",
     instructions=(
-        "Fully local semantic code discovery. Workflow: semantic discovery -> "
-        "exact source verification -> conclusion -> edit -> validate. "
-        "Call index_codebase once per project to build the .semantic_index "
-        "vector database, then use semantic_search to LOCATE candidate files/"
-        "symbols by concept and semantic_search_similar to find code similar "
-        "to a known snippet. Once you know the interesting file:line, call "
-        "get_symbol_context (read-only) for a live-source context pack of the "
-        "symbol there (imports, lexical references, related tests, freshness) "
-        "before concluding or editing. Results are candidates only: ALWAYS "
-        "read the current source with exact tools (read_file, grep/rg, symbol "
-        "search) before concluding behavior or editing. If indexed content "
-        "and the current source disagree, the current source wins. Prefer "
-        "exact search when the user already gave a specific filename, symbol, "
-        "error message, route, or exact string."
+        "Choose by task: semantic_search locates code from a behavior described "
+        "in words; semantic_search_similar finds implementations resembling a "
+        "known file or method; get_symbol_context inspects a known file and line. "
+        "Use exact search for known names and strings. All three tools are read-only. "
+        "Only the two searches require an index and Ollama embeddings; "
+        "get_symbol_context works directly on live files without either. "
+        "Pass the absolute project root as directory_path and a project-relative "
+        "file as path. Inputs use start_line/end_line; result startLine/endLine "
+        "are output fields. To inspect a hit, pass its path and startLine as line "
+        "to get_symbol_context, then verify the live source. Search snapshots "
+        "may be stale; scores are similarity, not confidence. Empty results "
+        "do not prove absence. If search reports a missing index, check "
+        "get_index_status; index_codebase writes index state and requires task "
+        "authorization. Correct invalid arguments before retrying."
     ),
 )
 indexer = Indexer()
@@ -67,37 +88,41 @@ def index_codebase(directory_path: str) -> dict:
     return indexer.index_directory(directory_path)
 
 
-@server.tool()
+@server.tool(title="Find code by behavior", annotations=READ_ONLY_ANNOTATIONS)
 def semantic_search(
-    query: str,
-    directory_path: str,
-    limit: int = DEFAULT_SEARCH_LIMIT,
-    path_filter: str | None = None,
-    min_score: float | None = None,
+    query: Annotated[str, Field(
+        min_length=1,
+        description="One focused description of the desired implementation, e.g. 'retry failed requests with exponential backoff'."
+    )],
+    directory_path: ProjectDirectory,
+    limit: SearchLimit = DEFAULT_SEARCH_LIMIT,
+    path_filter: Annotated[str | None, Field(
+        min_length=1,
+        description="Optional project-relative glob or path segment, e.g. 'src/auth/*', '*.cs', or 'tests'. Use forward slashes; omit to search all indexed files."
+    )] = None,
+    min_score: Annotated[float | None, Field(
+        ge=-1, le=1,
+        description="Optional minimum cosine similarity (-1 to 1), applied before ranking. Omit initially: this is not a confidence threshold."
+    )] = None,
 ) -> dict:
-    """DISCOVERY tool: find WHERE code that matches a concept is implemented.
+    """Find where a behavior is implemented when its location is unknown.
 
-    Use this when you know the behavior/concept/feature but NOT the exact file
-    or symbol — it searches by semantic meaning over the indexed codebase and
-    returns candidate locations (path, line range, symbol, snippet). Examples
-    of good queries: "where is authentication state updated?", "code
-    responsible for retrying failed payments", "where user permissions are
-    enforced", "flow from API request to database persistence",
-    "implementations similar to background job scheduling".
+    Use one focused description of the desired code. Use exact search for a
+    known name/string, or semantic_search_similar for an example implementation.
+    Read-only. Requires an existing index and Ollama with its embedding model.
 
-    Rules:
-    - Results are CANDIDATES ONLY. Always verify by reading the actual current
-      source with read_file / grep before concluding behavior or editing.
-      Never edit code based solely on an embedding result.
-    - The index can be stale; the live filesystem is authoritative.
-    - Prefer exact search (grep/read) first when the user already provided a
-      specific filename, symbol, constant, error message, route or string.
-    - For broad questions, run several focused queries instead of one vague one.
-    - Optional: path_filter (glob or path segment, e.g. "src/auth/*"), min_score
-      to drop weak matches.
+    Example arguments:
+    {"directory_path":"C:/work/project","query":"retry failed requests with exponential backoff","limit":4}
 
-    Returns {"results": [{path, absolutePath, startLine, endLine, symbol,
-    score, snippet, reason}, ...]}.
+    Returns results with path, startLine, endLine, symbol, score, snippet, and
+    reason, plus a note. Lines are 1-based and inclusive. These are indexed
+    snapshots; symbol is a best-effort chunk label. Scores measure similarity,
+    not confidence; diversity ranking can put a lower score before a higher one.
+
+    Next: pass a promising result's path and startLine as path and line to
+    get_symbol_context, then verify the live source. If the location has moved,
+    find it with exact search. Empty results do not prove absence: check index
+    state, broaden filters, or rephrase. Search never builds or refreshes an index.
     """
     logger.info("semantic_search(%r, %s, limit=%d)", query, directory_path, limit)
     return indexer.semantic_search(
@@ -105,26 +130,38 @@ def semantic_search(
     )
 
 
-@server.tool()
+@server.tool(title="Find similar implementations", annotations=READ_ONLY_ANNOTATIONS)
 def semantic_search_similar(
-    directory_path: str,
-    path: str,
-    start_line: int | None = None,
-    end_line: int | None = None,
-    limit: int = DEFAULT_SEARCH_LIMIT,
+    directory_path: ProjectDirectory,
+    path: SourcePath,
+    start_line: Annotated[int | None, Field(
+        ge=1, description="First live-source line to use, 1-based and inclusive; defaults to line 1. Prefer a complete method or function."
+    )] = None,
+    end_line: Annotated[int | None, Field(
+        ge=1, description="Last live-source line to use, inclusive; defaults to the file's final line. Must be at least start_line and within the file."
+    )] = None,
+    limit: SearchLimit = DEFAULT_SEARCH_LIMIT,
 ) -> dict:
-    """Find code IMPLEMENTATIONS SIMILAR to a known snippet or file.
+    """Find other implementations resembling a known file or method.
 
-    Answers "where else is something done like this?" — e.g. other handlers
-    following the same pattern, or other places with the same kind of logic.
-    The query is built from the CURRENT on-disk source at ``path`` (optionally
-    narrowed to start_line..end_line), so it always reflects reality even if
-    the index is stale. The queried source is split into chunks (same chunker
-    as indexing), each chunk is embedded separately, per-chunk results are
-    merged keeping the best score per chunk, and chunks overlapping the
-    queried range are excluded. Same rules as semantic_search: candidates
-    only; verify by reading the actual files before asserting anything or
-    editing.
+    Use for similar handlers or potential reuse. Reads the query from live
+    source, even if unindexed. Read-only. Requires a candidate index and Ollama
+    with its embedding model. Use get_symbol_context to inspect the given code;
+    use semantic_search when you only have a behavior described in words.
+
+    Example arguments:
+    {"directory_path":"C:/work/project","path":"app.py","start_line":5,"end_line":13,"limit":4}
+
+    Prefer a complete method. Bounds are 1-based and inclusive; either can be
+    omitted. Omitting both queries the whole file. Excludes overlapping chunks
+    in the query file; whole-file queries exclude that entire file. Large inputs
+    may be capped; note explains how to narrow the range.
+
+    Returns deduplicated results with path, startLine, endLine, symbol, score,
+    snippet, and reason, plus range and note. Range is resolved bounds or null
+    for a whole file. Scores measure similarity, not equivalent behavior.
+    Next: call get_symbol_context with a result's path and startLine as line,
+    then verify the live source; indexed candidates may be stale.
     """
     logger.info("semantic_search_similar(%s:%s-%s, %s)", path, start_line, end_line, directory_path)
     return indexer.similar(
@@ -132,27 +169,39 @@ def semantic_search_similar(
     )
 
 
-@server.tool()
+@server.tool(title="Inspect a live symbol", annotations=READ_ONLY_ANNOTATIONS)
 def get_symbol_context(
-    directory_path: str,
-    path: str,
-    line: int,
-    max_references: int = 12,
+    directory_path: ProjectDirectory,
+    path: SourcePath,
+    line: Annotated[int, Field(
+        ge=1,
+        description="Existing 1-based line inside the symbol to inspect. From a search hit, pass startLine as line; verify the location if the index is stale."
+    )],
+    max_references: Annotated[int, Field(
+        description=f"Maximum lexical references across the project. Omit for the default; values are clamped to 1-{MAX_REFERENCES_CAP}."
+    )] = DEFAULT_MAX_REFERENCES,
 ) -> dict:
-    """READ-ONLY context pack for the symbol at ``path:line`` (live source).
+    """Inspect the live symbol containing a known file and line before editing.
 
-    Use this AFTER semantic_search / semantic_search_similar have located an
-    interesting file and line, to gather focused context BEFORE drawing
-    conclusions or editing code. Returns the containing symbol (name, kind,
-    full line range, compact declaration, bounded snippet), the file's
-    imports, exact identifier references elsewhere in the project (relative
-    path, line, one-line preview), test-like files referencing the symbol,
-    and index freshness (current/stale/not_indexed). Everything is built
-    from the CURRENT on-disk source, which is authoritative; the index is
-    consulted read-only only for the freshness report.
+    Call directly when the user or exact search gives a location, or after
+    semantic_search/semantic_search_similar. Read-only: no Ollama, embeddings,
+    or existing index required. Never creates or refreshes an index.
 
-    The returned ``references`` are lexical identifier matches only — they
-    are candidates, and must NOT be described as proven callers or callees.
+    Example arguments:
+    {"directory_path":"C:/work/project","path":"app.py","line":5}
+
+    Returns symbol (name, kind, startLine, endLine, declaration), bounded
+    snippet, imports, references, relatedTests, indexState, and note. Boundaries
+    are best-effort; an unnamed block can be returned when parsing fails.
+    References are capped exact identifier matches outside the definition,
+    including comments/strings, not proven callers or callees. relatedTests
+    groups only returned references in test-like paths; empty does not mean
+    there are no tests.
+
+    indexState is current, stale, or not_indexed for this file's stored hash;
+    live source remains authoritative in every state. Next: read the live file
+    to verify behavior or omitted code; use exact search for complete references.
+    If line is outside the current file, locate the symbol and retry.
     """
     logger.info("get_symbol_context(%s:%s, %s)", path, line, directory_path)
     return indexer.symbol_context(directory_path, path, line, max_references)

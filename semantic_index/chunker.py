@@ -85,7 +85,26 @@ _C_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^(?![#/])[A-Za-z_][\w\s\*&:<>,\[\]]*?\s\*?(?P<name>[A-Za-z_]\w*)\s*\([^;{)]*\)\s*(?:const\s*)?(?:override\s*)?\{?\s*$"), "function"),
 ]
 
-_CSHARP_PATTERNS = _JVM_PATTERNS
+# C# declarations are recognized at scope boundaries, independently of
+# indentation and brace style. Keep these separate from the JVM heuristics.
+_CSHARP_PREFIX = (
+    r"(?:\[[^\]]*\]\s*)*"
+    r"(?:(?:public|private|protected|internal|static|abstract|sealed|partial|"
+    r"readonly|unsafe|ref|new|async|virtual|override|extern|file)\s+)*"
+)
+_CSHARP_TYPE = re.compile(
+    _CSHARP_PREFIX + r"(?:class|struct|interface|enum|record(?:\s+(?:class|struct))?)"
+    r"\s+(?P<name>@?\w+)\b"
+)
+_CSHARP_METHOD = re.compile(
+    _CSHARP_PREFIX
+    + r"(?P<return>[\w@][\w@.<>?,\[\]\s:*]*?)\s+"
+    r"(?:[\w@]+\.)*(?P<name>@?\w+)(?:\s*<[^>]+>)?\s*"
+    r"\("
+)
+_CSHARP_CONSTRUCTOR = re.compile(
+    _CSHARP_PREFIX + r"(?P<name>@?\w+)\s*\("
+)
 
 _BRACE_LANGUAGES: dict[str, list[tuple[re.Pattern[str], str]]] = {
     "javascript": _JS_PATTERNS,
@@ -96,7 +115,6 @@ _BRACE_LANGUAGES: dict[str, list[tuple[re.Pattern[str], str]]] = {
     "kotlin": _JVM_PATTERNS,
     "c": _C_PATTERNS,
     "cpp": _C_PATTERNS,
-    "csharp": _CSHARP_PATTERNS,
 }
 
 _DECORATOR_PREFIXES = ("@", "#[")
@@ -347,6 +365,119 @@ def _brace_blocks(text: str, language: str) -> list[_Block]:
     return blocks
 
 
+def _csharp_body_header(header: str, parameter_start: int) -> bool:
+    """Require the method's parameter list to lead directly to a body.
+
+    In particular, 'Make() => new Options() {' opens an initializer, not the
+    method body. Balance parentheses so nested defaults/attributes cannot
+    make the parameter match consume an entire expression-bodied member.
+    """
+    depth = 0
+    for idx in range(parameter_start, len(header)):
+        if header[idx] == "(":
+            depth += 1
+        elif header[idx] == ")":
+            depth -= 1
+            if depth == 0:
+                tail = header[idx + 1:].strip()
+                return not tail or bool(re.fullmatch(
+                    r"where\s+[\w\s:<>,.?()\[\]]+|:\s*(?:base|this)\s*\(.*\)", tail
+                ))
+    return False
+
+
+def _csharp_blocks(text: str) -> list[_Block]:
+    """Complete C# type/method scopes, including methods in small classes.
+
+    Every brace participates in the stack, but only declarations directly in
+    a namespace/type can introduce a named scope. Initializers, accessors and
+    control flow remain anonymous, so their contents cannot masquerade as
+    member declarations. A closing brace ends exactly the scope it opened.
+    """
+    blocks: list[_Block] = []
+    stack: list[_Block] = []
+    pending: list[str] = []
+    start = 0
+    lines = text.splitlines()
+    for idx, line in enumerate(_mask_source(lines)):
+        if line.lstrip().startswith("#"):
+            continue  # preprocessor directives are not declaration headers
+        for token in re.findall(r"[^{};]+|[{};]", line):
+            if token not in ("{", "}", ";"):
+                if token.strip():
+                    if not pending:
+                        start = idx
+                    pending.append(token)
+                continue
+            if token == "{":
+                header = " ".join(pending).strip()
+                parent = stack[-1] if stack else None
+                kind, name = "block", ""
+                if parent is None or parent.kind in ("namespace", "class"):
+                    match = _CSHARP_TYPE.match(header)
+                    if match:
+                        kind, name = "class", match.group("name")
+                    elif re.fullmatch(r"namespace\s+[\w.]+", header):
+                        kind = "namespace"
+                    elif parent is not None and parent.kind == "class":
+                        match = _CSHARP_METHOD.match(header)
+                        if match and _csharp_body_header(header, match.end() - 1):
+                            kind, name = "method", match.group("name")
+                        else:
+                            match = _CSHARP_CONSTRUCTOR.match(header)
+                            if (match and match.group("name") == parent.name
+                                    and _csharp_body_header(header, match.end() - 1)):
+                                kind, name = "method", match.group("name")
+                stack.append(_Block(start if pending else idx, idx, kind, name))
+            elif token == "}" and stack:
+                block = stack.pop()
+                block.end = idx
+                if block.name:
+                    blocks.append(block)
+            pending.clear()
+    # Incomplete source still has useful containing scopes while being edited.
+    for block in stack:
+        if block.name:
+            block.end = len(lines) - 1
+            blocks.append(block)
+    return sorted(blocks, key=lambda b: (b.start, -b.end))
+
+
+def _csharp_chunk_blocks(blocks: list[_Block]) -> list[_Block]:
+    """Partition type bodies at their members, then bound embedding chunks.
+
+    Symbol lookup uses the original complete scopes; embedding windows must
+    never supply the boundaries or synthetic '(part N)' names of a symbol.
+    """
+    pieces: list[_Block] = []
+    stack: list[_Block] = []
+    for block in blocks:
+        while stack and block.start > stack[-1].end:
+            tail = stack.pop()
+            if tail.start <= tail.end:
+                pieces.extend(_window_split(tail))
+        if stack:
+            parent = stack[-1]
+            if parent.start < block.start:
+                pieces.extend(_window_split(
+                    _Block(parent.start, block.start - 1, parent.kind, parent.name)
+                ))
+            parent.start = block.end + 1
+        stack.append(_Block(block.start, block.end, block.kind, block.name))
+    while stack:
+        tail = stack.pop()
+        if tail.start <= tail.end:
+            pieces.extend(_window_split(tail))
+    return pieces
+
+
+def csharp_symbols(text: str) -> list[CodeChunk]:
+    """Return complete named C# scopes for read-only live symbol selection."""
+    lines = text.splitlines()
+    return [CodeChunk("\n".join(lines[b.start:b.end + 1]), b.start + 1,
+                      b.end + 1, b.kind, b.name) for b in _csharp_blocks(text)]
+
+
 def _window_chunks(text: str) -> list[_Block]:
     lines = text.splitlines()
     blocks: list[_Block] = []
@@ -373,6 +504,8 @@ def chunk_code(text: str, language: str) -> list[CodeChunk]:
     lines = text.splitlines()
     if language == "python":
         blocks = _python_blocks(text)
+    elif language == "csharp":
+        blocks = _csharp_chunk_blocks(_csharp_blocks(text))
     elif language in _BRACE_LANGUAGES:
         blocks = _brace_blocks(text, language)
     else:

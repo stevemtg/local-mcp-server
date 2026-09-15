@@ -66,10 +66,46 @@ automatic re-embed.
 | `get_symbol_context` | yes | `directory_path: string`, `path: string`, `line: int`, `max_references?` (default 12, clamped 1–50) | context pack for the live symbol at `path:line`: `{symbol: {name, kind, startLine, endLine, declaration}, snippet, imports, references, relatedTests, indexState, note}` — built from **live source**; `references` are lexical matches, not proven callers/callees |
 | `get_index_status` | yes | `directory_path: string` | `{indexed, num_files, num_chunks, embedding_model, embedding_dim, created_at, last_indexed_at}` |
 
+### Choosing and calling a search tool
+
+- Use `semantic_search` for one behavior described in words, such as
+  `retry failed requests with exponential backoff`. Use
+  `semantic_search_similar` for implementations resembling an existing file
+  or complete method. Use exact search for known identifiers and strings.
+- Both searches need an existing index and the configured Ollama embedding
+  model. They never create or refresh a project index. A missing/empty index
+  returns an empty result with guidance; an incompatible model raises an
+  error explaining how to re-index. `get_index_status` reports stored index
+  metadata; it does not check every live file for changes.
+- `limit` accepts **1–50** (default **8**, configurable). `path_filter` accepts
+  project-relative globs or segments, such as `src/auth/*`, `*.cs`, or `tests`.
+  `min_score` is an optional cosine threshold from **-1 to 1**; omit it initially.
+  Scores measure similarity, not confidence. Semantic search balances
+  relevance and diversity, so results need not have descending scores.
+- Similarity search requires a project-relative `path` and reads live source,
+  even if that file is unindexed. Bounds are **1-based and inclusive**;
+  `start_line` defaults to 1 and `end_line` defaults to EOF independently.
+  Invalid, reversed, or out-of-file ranges raise errors. The returned `range`
+  contains resolved bounds, or `null` when both were omitted.
+- Similarity search excludes overlapping chunks in the query file; a whole-file
+  query excludes that entire file, including stale chunks past the current EOF.
+  Results are deduplicated using their best cosine score. Large queries use at
+  most `SIMILAR_QUERY_MAX_PARTS` chunks; the response `note` reports any cap.
+- Result symbols, snippets, and line numbers come from the stored index.
+  Existing indexes can retain older chunk labels after a parser update.
+  Follow promising hits with `get_symbol_context` and read the live file.
+  Empty results do not establish absence: check index state, broaden filters,
+  or rephrase the query.
+
+All three discovery/context tools publish parameter descriptions, input examples,
+and MCP `readOnlyHint`/`openWorldHint` annotations through `tools/list`.
+Search limits and line numbers carry validation constraints; `max_references`
+keeps its documented clamping behavior.
+
 ## Intended workflow (hybrid search policy)
 
 ```text
-semantic discovery → exact source verification → conclusion → edit → validate
+semantic discovery → symbol context → exact source verification → conclusion → edit → validate
 ```
 
 - **Semantic search** (`semantic_search`, `semantic_search_similar`) is for
@@ -97,6 +133,38 @@ copy that file (or point Cline's rules at it) in projects where you want the
 behavior enforced.
 
 ## Cline / VS Code configuration
+
+### Instructions for a local chat model
+
+The three tool descriptions are self-contained: each states when to use it,
+gives a JSON argument example, describes results, and provides the next step.
+The shared server instructions and
+[Cline rule](.clinerules/10-semantic-code-search.md) use the same routing:
+
+| Task | Tool |
+| --- | --- |
+| Find an implementation from a behavior | `semantic_search` |
+| Find implementations resembling known code | `semantic_search_similar` |
+| Inspect a known file and line | `get_symbol_context` directly |
+
+- Cline's conversational model and the MCP server's Ollama embedding model
+  are configured separately. The searches use the server's `EMBED_MODEL`;
+  `get_symbol_context` needs neither embeddings nor an existing index.
+- Keep calls focused: start with `limit: 4`, query a complete method for
+  similarity, and omit unused optional arguments. All examples show the
+  tool's argument object; use the calling format supplied by Cline.
+- Input names use `start_line` and `end_line`. A result's `startLine` becomes
+  `line` when calling `get_symbol_context`; use its relative `path`.
+- To use the workflow in another project, copy the rule into that project's
+  `.clinerules/` and enable it in Cline's Rules panel. The rule in this server
+  repository applies to this workspace. Cline reads workspace rules as prompt
+  context, so keep them focused. See [Cline's rules documentation](https://docs.cline.bot/customization/cline-rules).
+- Reconnect the MCP server in Cline after changing `server.py` so it receives
+  the latest descriptions and schemas. The JSON examples are exercised by
+  the MCP end-to-end tests; model-specific tool selection still depends on
+  the chosen local model and its Cline configuration.
+
+### Server connection
 
 Add to Cline's MCP settings (`mcp_settings.json`). Only genuinely read-only
 tools are auto-approved; the stateful `index_codebase` is **not**:
@@ -145,6 +213,7 @@ search, fix the cause, and run the tests.
 | `MAX_FILE_SIZE_BYTES` | `307200` | Skip files larger than this |
 | `MAX_CHUNK_LINES` | `180` | Split blocks longer than this |
 | `DEFAULT_SEARCH_LIMIT` | `8` | Default top-K for semantic searches |
+| `SIMILAR_QUERY_MAX_PARTS` | `12` | Maximum source chunks used for a similarity query; a response note reports truncation |
 | `MMR_LAMBDA` | `0.5` | Relevance(1.0) ↔ diversity(0.0) trade-off |
 | `MMR_POOL_FACTOR` | `6` | MMR re-ranks the raw top `limit × factor` hits |
 | `SNIPPET_MAX_LINES` | `24` | Snippets truncated to this many lines |
@@ -173,6 +242,9 @@ search, fix the cause, and run the tests.
 ## Development
 
 ```powershell
+py dev\run_tests.py      # full suite (offline regressions + MCP end-to-end)
 py dev\smoke_test.py     # offline unit smoke: chunker + store (fake vectors)
+py dev\csharp_test.py    # offline C# scope and symbol-context regressions
+py dev\search_test.py    # offline search validation, filtering, ranges, and read-only checks
 py dev\e2e_test.py       # full MCP stdio round-trip against real Ollama
 ```

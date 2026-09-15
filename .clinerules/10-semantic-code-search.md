@@ -1,106 +1,74 @@
-# Semantic Code Search Workflow
+# Code discovery with the semantic-index MCP server
 
-## Core policy
+Use the connected `codebase-semantic-index` tools through Cline's provided
+MCP tool interface. The examples below are JSON argument objects; replace the
+sample project root and locations with real ones. Omit unused optional fields.
 
-```text
-semantic discovery → symbol context → exact source verification → conclusion → edit → validation
+## Choose the tool
+
+| You know / need | Action |
+| --- | --- |
+| A behavior, but not its implementation location | `semantic_search` with one focused query |
+| A file or method; want other similar implementations | `semantic_search_similar` with a complete method range |
+| A file and line; need its definition and references | `get_symbol_context` directly |
+| An exact name or string; need its location | Cline's available exact-search tool, then `get_symbol_context` |
+
+`semantic_search` example:
+
+```json
+{"directory_path":"C:/work/project","query":"retry failed requests with exponential backoff","limit":4}
 ```
 
-The semantic index (`semantic_search` / `semantic_search_similar` MCP tools) is
-a **discovery aid only**. The live filesystem/source code is **always
-authoritative**. If indexed content and the current source code disagree, the
-current source code wins. The index may be stale.
+`semantic_search_similar` example:
 
-## When to use semantic search
+```json
+{"directory_path":"C:/work/project","path":"app.py","start_line":5,"end_line":13,"limit":4}
+```
 
-- Use `semantic_search` **early** when you do NOT know where a feature,
-  behavior, bug, workflow, or architectural concept is implemented.
-- Search by **meaning and intent**, not exact identifiers, e.g.
-  "where is authentication state updated?", "code responsible for retrying
-  failed payments", "where user permissions are enforced".
-- Prefer **multiple focused queries** over one broad query when a single query
-  is insufficient (decompose the concept into sub-questions).
-- Use `semantic_search_similar(path, startLine, endLine)` to answer "where
-  else is something implemented like this?".
-- If the user already provided a specific filename, function/class/constant
-  name, error message, route, config key, database field, or exact string,
-  **prefer exact search** (`search_files`/`rg`/`read_file`, symbol lookup)
-  directly — do not waste a semantic query on a known identifier.
+`get_symbol_context` example:
 
-## When to use symbol context
+```json
+{"directory_path":"C:/work/project","path":"app.py","line":5}
+```
 
-- Once an interesting source location is known, call
-  `get_symbol_context(directory_path, path, line)` before concluding behavior
-  or editing code. This applies whether the location came from semantic search,
-  exact search, an error, or the user.
-- Pass the absolute project root as `directory_path`, the project-relative path
-  as `path`, and a 1-based line inside the relevant symbol as `line`.
-- Use the result to orient the investigation: it provides a bounded live-source
-  snippet, the containing symbol, imports, lexical references, related tests,
-  and `indexState` (`current`, `stale`, or `not_indexed`).
-- The returned snippet and references are bounded. Use `read_file` for omitted
-  source and exact search when a complete reference list is required.
-- `references` are exact lexical identifier matches, **not proven callers or
-  callees**. Imports and symbol boundaries are best-effort. Verify important
-  relationships with exact search or language-aware definition/reference tools.
-- `get_symbol_context` reads the current file and works without Ollama or a
-  current semantic index. A `stale` or `not_indexed` state affects later
-  semantic discovery, not the authority of the live-source context it returns.
+## Arguments and next steps
 
-## Verification is mandatory
+- `directory_path`: absolute root of the project being inspected.
+- `path`: project-relative source file, using forward slashes. Copy a result's
+  `path`; reserve `absolutePath` for file-reading tools that accept it.
+- Lines are 1-based. Similarity ranges include both endpoints. Input arguments
+  are **`start_line` / `end_line`**; output fields are `startLine` / `endLine`.
+  To inspect a search hit, pass its `path` and use its `startLine` as **`line`**
+  in `get_symbol_context`.
+- Start with a small result count, such as `limit: 4`. For similarity search,
+  select a complete method. Read `note` for capped queries or missing indexes.
+- Both searches require a candidate index and the server's Ollama embedding
+  model. Cline's conversational model can be local and is configured separately.
+  `get_symbol_context` works without an index or Ollama; call it directly for
+  a known location.
+- A missing index: inspect `get_index_status`. Build/refresh with `index_codebase`
+  when needed and authorized by the task. Existing authorization still applies.
+- An invalid argument: correct the path, range, or type before retrying.
+  An outdated location: use exact search to find the symbol's current line.
+- No useful hits: check index state, broaden filters, or rephrase the query.
+  Empty results do not prove the code is absent.
 
-- Semantic results are **candidate locations only**.
-- For a candidate source line, use `get_symbol_context` to gather focused
-  live-source context before drawing conclusions or preparing an edit.
-- Before concluding behavior or editing anything, **read the actual current
-  source** at the candidate location with exact tools (`read_file`, `rg`,
-  symbol/definition search).
-- Verify important **callers, callees, imports, references, configuration
-  keys, routes, and related symbols** with exact search — not embeddings.
-- **Never modify code solely from an embedding/index result.**
-- Before editing a file, always read its current version from disk.
+## Verify before editing
 
-## Division of responsibility
+1. Inspect a promising location with `get_symbol_context`, whether it came
+   from semantic search, exact search, or the user.
+2. Read the live source with Cline's available file-reading tool before
+   concluding behavior or editing. Stored snippets and line numbers may be stale.
+3. Treat scores as similarity, not confidence. `references` are capped lexical
+   identifier matches outside the definition, including comments/strings;
+   they do not prove callers or callees. `relatedTests` is the test-like subset
+   of returned references; an empty list does not prove there are no tests.
+4. `indexState` reports this file's stored hash: `current`, `stale`, or
+   `not_indexed`. Live source is authoritative in every state. Use exact search
+   when you need complete references or relationships.
+5. After edits, check affected references and run relevant tests/build checks.
+   Refresh the index when further semantic discovery needs the changed source.
 
-| Task | Tool class |
-| --- | --- |
-| Unknown location, concept-level discovery, "similar implementations" | `semantic_search` / `semantic_search_similar` |
-| Focused live context for a known file and line | `get_symbol_context` |
-| Symbol names, imports, callers, references, routes, constants, error messages, exact strings | `search_files`/`rg`/symbol lookup |
-| What the code actually does | `read_file` on the live source |
-| Validation | tests, builds, linting, type checks |
-
-Do not try to replace grep, symbol lookup, or source reading with embeddings.
-
-## After edits
-
-- Re-run relevant exact searches (callers/references of changed symbols).
-- Re-run `get_symbol_context` when useful to inspect the updated live symbol
-  and its bounded reference/test candidates.
-- Run the project's tests / build / lint / typecheck that are affected.
-- If edits invalidated the index for a file, re-run `index_codebase` if
-  semantic discovery is needed again afterwards. Until then,
-  `get_symbol_context` may correctly report `indexState: stale`.
-
-## Auto-approval
-
-- Read-only tools (`semantic_search`, `semantic_search_similar`,
-  `get_symbol_context`, `get_index_status`) are safe to auto-approve.
-- `index_codebase` writes state into the project and is **not** auto-approved.
-
-## Example target flow
-
-User: "Fix the issue where users occasionally get logged out after refreshing their profile."
-
-1. Implementation location unknown → call `semantic_search` with focused
-   queries: "profile refresh flow", "session/auth state updates",
-   "logout / session invalidation".
-2. Take the candidate files/symbols returned.
-3. Call `get_symbol_context` with the project root, candidate path, and a line
-   inside the candidate range. Inspect its live symbol/snippet, imports,
-   lexical references, related tests, and `indexState`.
-4. Open the actual current files; use exact search for complete callers and
-   references of session mutations and auth state updates. Do not treat the
-   context tool's lexical matches as a proven call graph.
-5. Determine the real cause from verified source only.
-6. Edit, then run tests/typecheck/build and re-check affected references.
+The three tools above are read-only. Cline's configured approval settings
+control execution. `index_codebase` writes index state and is not included in
+this project's read-only auto-approval list.

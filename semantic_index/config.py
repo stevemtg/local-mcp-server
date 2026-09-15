@@ -85,6 +85,8 @@ FALLBACK_CHUNK_OVERLAP: int = 10
 # --- Retrieval settings ----------------------------------------------------------
 # Default number of results returned by semantic_search / semantic_search_similar.
 DEFAULT_SEARCH_LIMIT: int = int(os.environ.get("DEFAULT_SEARCH_LIMIT", "8"))
+# Bound tool responses and the work spent diversifying search results.
+MAX_SEARCH_LIMIT: int = 50
 # MMR (maximal marginal relevance) diversity knob: 1.0 = pure relevance, 0.0 = pure diversity.
 MMR_LAMBDA: float = float(os.environ.get("MMR_LAMBDA", "0.5"))
 # MMR re-ranks this many raw top hits before selecting the final limit results.

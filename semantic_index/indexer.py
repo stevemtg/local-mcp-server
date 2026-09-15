@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,7 @@ from .config import (
     DEFAULT_MAX_REFERENCES,
     DEFAULT_SEARCH_LIMIT,
     EMBED_MODEL,
+    MAX_SEARCH_LIMIT,
     SIMILAR_QUERY_MAX_PARTS,
     SNIPPET_MAX_LINES,
 )
@@ -25,6 +27,13 @@ logger = logging.getLogger("semantic_index.indexer")
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _validate_search_options(limit: int, min_score: float | None = None) -> None:
+    if not 1 <= limit <= MAX_SEARCH_LIMIT:
+        raise ValueError(f"limit must be between 1 and {MAX_SEARCH_LIMIT}")
+    if min_score is not None and (not math.isfinite(min_score) or not -1 <= min_score <= 1):
+        raise ValueError("min_score must be a finite number between -1 and 1")
 
 
 class Indexer:
@@ -135,10 +144,15 @@ class Indexer:
 
         Results are CANDIDATES ONLY — the live source files are authoritative.
         """
+        _validate_search_options(limit, min_score)
+        if not query.strip():
+            raise ValueError("query must describe the code or behavior to find")
+        if path_filter is not None and not path_filter.strip():
+            raise ValueError("path_filter must be a non-empty project-relative glob or segment")
         root = Path(directory_path).expanduser().resolve()
         if not root.is_dir():
             raise ValueError(f"Not a directory: {directory_path}")
-        store = VectorStore(root)
+        store = VectorStore(root, read_only=True)
         try:
             if store.count_chunks() == 0:
                 return {
@@ -147,9 +161,10 @@ class Indexer:
                     "results": [],
                     "note": "Index is empty — call index_codebase(directory_path) first.",
                 }
+            self._check_search_model(store)
             query_vector = self.embedder.embed_one(query)
             hits = store.search(
-                query_vector, max(1, limit), path_filter=path_filter, min_score=min_score
+                query_vector, limit, path_filter=path_filter, min_score=min_score
             )
             return {
                 "query": query,
@@ -172,45 +187,54 @@ class Indexer:
 
         The queried source is split with the same structure-aware chunker
         used for indexing, every part is embedded in its own Ollama request
-        (so large files can never exceed the embedding model's context
-        window), and the per-part results are merged keeping the best score
-        per chunk. The live file on disk stays authoritative. Chunks
+        to limit query size. Results are merged keeping the best score per
+        chunk. The live file on disk stays authoritative. Chunks
         overlapping the queried range are excluded from results.
         """
+        _validate_search_options(limit)
         root = Path(directory_path).expanduser().resolve()
         if not root.is_dir():
             raise ValueError(f"Not a directory: {directory_path}")
-        target = (root / path).resolve()
+        p = Path(path)
+        if p.is_absolute() or p.drive:
+            raise ValueError("path must be project-relative (absolute paths are rejected)")
+        target = (root / p).resolve()
         if root not in target.parents and target != root:
             raise ValueError(f"Path escapes project root: {path}")
         if not target.is_file():
             raise ValueError(f"File not found (index may be stale): {path}")
-        store = VectorStore(root)
+        text = read_text(target)
+        lines = text.splitlines()
+        rel = target.relative_to(root).as_posix()
+        language = classify_language(target)
+        has_range = start_line is not None or end_line is not None
+        s = 1 if start_line is None else start_line
+        e = len(lines) if end_line is None else end_line
+        if has_range and not 1 <= s <= e <= len(lines):
+            raise ValueError(f"Invalid line range {s}-{e}; expected 1 <= start_line <= end_line <= {len(lines)}")
+        text = "\n".join(lines[s - 1:e])
+        if not text.strip():
+            raise ValueError("Query source is empty; select a non-empty file or line range")
+        offset = s - 1
+        # A whole-file query excludes even stale indexed chunks beyond the
+        # current EOF (e.g. after deleting a method from the live file).
+        exclude = [(rel, s, e)] if has_range else [(rel, None, None)]
+        store = VectorStore(root, read_only=True)
         try:
             if store.count_chunks() == 0:
                 return {
                     "path": path,
+                    "range": [s, e] if has_range else None,
                     "directory": str(root),
                     "results": [],
                     "note": "Index is empty — call index_codebase(directory_path) first.",
                 }
-            text = read_text(target)
-            lines = text.splitlines()
-            rel = target.relative_to(root).as_posix()
-            language = classify_language(target)
-            if start_line is not None:
-                s = max(1, start_line)
-                e = end_line or len(lines)
-                text = "\n".join(lines[s - 1 : e])
-                offset = s - 1
-                exclude: list[tuple[str, int, int]] = [(rel, s, e)]
-            else:
-                offset = 0
-                exclude = [(rel, 1, len(lines))]
+            self._check_search_model(store)
             # Chunk the query source like at index time and embed each part
             # separately: a single whole-file request would exceed the
             # embedding model's context window for larger files.
             parts = chunk_code(text, language)
+            total_parts = len(parts)
             if len(parts) > SIMILAR_QUERY_MAX_PARTS:
                 logger.warning(
                     "Query source %s yields %d parts; capping at %d",
@@ -235,23 +259,37 @@ class Indexer:
             )
             merged: dict[tuple[str, int, int], StoredChunk] = {}
             for query_vector in vectors:
-                for hit in store.search(query_vector, max(1, limit), exclude=exclude):
+                for hit in store.search(query_vector, limit, exclude=exclude):
                     key = (hit.file_path, hit.start_line, hit.end_line)
                     prev = merged.get(key)
                     if prev is None or hit.score > prev.score:
                         merged[key] = hit
             hits = sorted(
-                merged.values(), key=lambda c: c.score, reverse=True
-            )[: max(1, limit)]
+                merged.values(), key=lambda c: (-c.score, c.file_path, c.start_line, c.end_line)
+            )[:limit]
+            note = "Candidates only. Read the current files before concluding or editing; the index may be stale."
+            if total_parts > len(parts):
+                note += (
+                    f" Query used only the first {len(parts)} of {total_parts} chunks."
+                    " Narrow start_line/end_line to search the omitted source."
+                )
             return {
                 "path": path,
-                "range": [start_line, end_line] if start_line else None,
+                "range": [s, e] if has_range else None,
                 "directory": str(root),
-                "note": "Candidates only. Read the current files before concluding or editing; the index may be stale.",
+                "note": note,
                 "results": [self._as_result(root, i, c) for i, c in enumerate(hits, 1)],
             }
         finally:
             store.close()
+
+    def _check_search_model(self, store: VectorStore) -> None:
+        stored_model = store.get_meta("embedding_model")
+        if stored_model is not None and stored_model != self.embedder.model:
+            raise ValueError(
+                f"Index uses embedding model {stored_model!r}, but search uses {self.embedder.model!r}. "
+                "Run index_codebase(directory_path) to re-index with the configured model."
+            )
 
     def symbol_context(
         self,
@@ -302,6 +340,8 @@ class Indexer:
 
     def status(self, directory_path: str) -> dict:
         root = Path(directory_path).expanduser().resolve()
+        if not root.is_dir():
+            raise ValueError(f"Not a directory: {directory_path}")
         index_dir = root / ".semantic_index"
         if not index_dir.is_dir():
             return {
@@ -314,7 +354,7 @@ class Indexer:
                 "created_at": None,
                 "last_indexed_at": None,
             }
-        store = VectorStore(root)
+        store = VectorStore(root, read_only=True)
         try:
             stats = store.stats()
             stats["directory"] = str(root)

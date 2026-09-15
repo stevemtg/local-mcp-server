@@ -71,6 +71,8 @@ CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
 
 
 def cosine(a: list[float], b: list[float]) -> float:
+    if len(a) != len(b):
+        raise ValueError("Cannot compare embeddings with different dimensions")
     dot = 0.0
     norm_a = 0.0
     norm_b = 0.0
@@ -111,10 +113,22 @@ def read_only_indexed_hash(project_root: Path, rel_path: str) -> str | None:
 class VectorStore:
     """File-based vector index stored at ``<root>/.semantic_index/index.db``."""
 
-    def __init__(self, project_root: Path) -> None:
+    def __init__(self, project_root: Path, *, read_only: bool = False) -> None:
         self.index_dir = project_root / INDEX_DIR_NAME
-        self.index_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.index_dir / DB_FILE_NAME
+        if read_only:
+            if self.db_path.is_file():
+                self._conn = sqlite3.connect(
+                    f"{self.db_path.as_uri()}?mode=ro", uri=True, check_same_thread=False
+                )
+            else:
+                # A missing index behaves like an empty one without creating
+                # directories or database files in the searched project.
+                self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+                self._conn.executescript(_SCHEMA)
+            self._conn.execute("PRAGMA query_only=ON")
+            return
+        self.index_dir.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.executescript(_SCHEMA)
@@ -220,7 +234,7 @@ class VectorStore:
         limit: int,
         path_filter: str | None = None,
         min_score: float | None = None,
-        exclude: list[tuple[str, int, int]] | None = None,
+        exclude: list[tuple[str, int | None, int | None]] | None = None,
         mmr_lambda: float = MMR_LAMBDA,
     ) -> list[StoredChunk]:
         """Cosine similarity + MMR re-ranking over stored chunks.
@@ -232,14 +246,16 @@ class VectorStore:
         3. Greedily select ``limit`` results with Maximal Marginal
            Relevance so near-duplicate chunks don't crowd out diverse
            candidate locations.
+
+        Exclusion bounds are inclusive; None means an unbounded endpoint.
         """
 
         def overlaps(c: StoredChunk) -> bool:
             for e_path, e_start, e_end in exclude or []:
                 if (
                     c.file_path == e_path
-                    and c.start_line <= e_end
-                    and c.end_line >= e_start
+                    and (e_end is None or c.start_line <= e_end)
+                    and (e_start is None or c.end_line >= e_start)
                 ):
                     return True
             return False
@@ -271,7 +287,7 @@ class VectorStore:
             chunk.embedding = list(vector)
             scored.append(chunk)
 
-        scored.sort(key=lambda c: c.score, reverse=True)
+        scored.sort(key=lambda c: (-c.score, c.file_path, c.start_line, c.end_line))
         pool = scored[: max(limit * MMR_POOL_FACTOR, 40)]
 
         # Greedy MMR selection: maximize lambda*relevance - (1-lambda)*maxSim(chosen).

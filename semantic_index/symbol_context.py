@@ -13,7 +13,7 @@ import logging
 import re
 from pathlib import Path
 
-from .chunker import chunk_code
+from .chunker import chunk_code, csharp_symbols
 from .config import (
     CONTEXT_IMPORTS_MAX,
     CONTEXT_PREVIEW_MAX_CHARS,
@@ -92,13 +92,19 @@ def build_symbol_context(
     limit = max(1, min(int(max_references), MAX_REFERENCES_CAP))
 
     # -- symbol selection (live source only) ---------------------------------
-    chunks = chunk_code(text, language)
+    # C# embedding chunks partition classes and may window large methods.
+    # Resolve against complete declarations, independent of embedding limits.
+    chunks = csharp_symbols(text) if language == "csharp" else chunk_code(text, language)
     matches = [c for c in chunks if c.start_line <= line <= c.end_line]
     if matches:
-        # Smallest range wins; named blocks beat generic ones on a tie.
+        # A complete named symbol beats even a smaller generic window. Among
+        # named scopes, choose the innermost (e.g. a method inside a class).
         chosen = min(
             matches,
-            key=lambda c: (c.end_line - c.start_line, 0 if c.kind != "block" else 1),
+            key=lambda c: (
+                0 if c.name and c.kind != "block" and not _GENERIC_NAME_RE.match(c.name) else 1,
+                c.end_line - c.start_line,
+            ),
         )
         raw_name = chosen.name
         kind = chosen.kind
