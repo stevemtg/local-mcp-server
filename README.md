@@ -212,6 +212,7 @@ search, fix the cause, and run the tests.
 | `EMBED_CONCURRENCY` | `4` | Parallel embedding requests |
 | `MAX_FILE_SIZE_BYTES` | `307200` | Skip files larger than this |
 | `MAX_CHUNK_LINES` | `180` | Split blocks longer than this |
+| `MAX_CHUNK_CHARS` | `4000` | Maximum source characters per chunk, including newlines; embedding metadata is added separately |
 | `DEFAULT_SEARCH_LIMIT` | `8` | Default top-K for semantic searches |
 | `SIMILAR_QUERY_MAX_PARTS` | `12` | Maximum source chunks used for a similarity query; a response note reports truncation |
 | `MMR_LAMBDA` | `0.5` | Relevance(1.0) ↔ diversity(0.0) trade-off |
@@ -236,14 +237,19 @@ search, fix the cause, and run the tests.
   syntax may be missed and fall back to fixed line-window chunks.
 - Search is a brute-force cosine scan over the SQLite store — perfectly fine
   for tens of thousands of chunks, not for million-chunk monorepos.
-- `nomic-embed-text` truncates inputs around 8k tokens; very large blocks are
-  pre-split via `MAX_CHUNK_LINES`.
+- Embedding context limits depend on the model and its configuration. Source
+  blocks are split at method boundaries where possible, then bounded by both
+  `MAX_CHUNK_LINES` and `MAX_CHUNK_CHARS`, including fallback chunks and large
+  methods. A single oversized line is split into fragments sharing its line
+  number. The character limit is a heuristic, not a token count; lower it for
+  models with smaller contexts or unusually token-dense source.
 
 ## Development
 
 ```powershell
 py dev\run_tests.py      # full suite (offline regressions + MCP end-to-end)
 py dev\smoke_test.py     # offline unit smoke: chunker + store (fake vectors)
+py dev\chunker_test.py   # offline chunk-size and indexing regressions
 py dev\csharp_test.py    # offline C# scope and symbol-context regressions
 py dev\search_test.py    # offline search validation, filtering, ranges, and read-only checks
 py dev\e2e_test.py       # full MCP stdio round-trip against real Ollama

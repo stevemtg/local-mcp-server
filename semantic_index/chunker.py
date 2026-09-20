@@ -19,7 +19,12 @@ import re
 import tokenize
 from dataclasses import dataclass
 
-from .config import FALLBACK_CHUNK_LINES, FALLBACK_CHUNK_OVERLAP, MAX_CHUNK_LINES
+from .config import (
+    FALLBACK_CHUNK_LINES,
+    FALLBACK_CHUNK_OVERLAP,
+    MAX_CHUNK_CHARS,
+    MAX_CHUNK_LINES,
+)
 
 logger = logging.getLogger("semantic_index.chunker")
 
@@ -54,8 +59,8 @@ class _Start:
 _PY_COMMENT = ("#",)
 _CURLY_COMMENT = ("//", "/*", "*")
 
-_PY_DEF = re.compile(r"(?P<indent>[ \t]*)(?:async\s+)?def\s+(?P<name>\w+)")
-_PY_CLASS = re.compile(r"(?P<indent>[ \t]*)class\s+(?P<name>\w+)")
+_PY_DEF = re.compile(r"^(?P<indent>[ \t]*)(?:async\s+)?def\s+(?P<name>\w+)")
+_PY_CLASS = re.compile(r"^(?P<indent>[ \t]*)class\s+(?P<name>\w+)")
 
 _JS_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*(?P<name>[A-Za-z_$][\w$]*)"), "function"),
@@ -254,6 +259,10 @@ def _split_large_block(
     inner = [s for s in inner if block.start < s.line <= block.end]
     if not inner:
         return []
+    # Nested helpers belong to their method, rather than becoming sibling
+    # chunks that absorb the remainder of the enclosing method's body.
+    child_indent = min(s.indent for s in inner)
+    inner = [s for s in inner if s.indent == child_indent]
     pieces: list[_Block] = []
     prev_end = block.start
     for pos, s in enumerate(inner):
@@ -270,20 +279,50 @@ def _split_large_block(
     return pieces
 
 
-def _window_split(block: _Block) -> list[_Block]:
-    """Fixed line-window split for oversized blocks with no inner methods."""
-    pieces: list[_Block] = []
-    total = block.end - block.start + 1
-    for offset in range(0, total, MAX_CHUNK_LINES):
-        s = block.start + offset
-        e = min(block.start + offset + MAX_CHUNK_LINES - 1, block.end)
-        suffix = f" (part {offset // MAX_CHUNK_LINES + 1})" if total > MAX_CHUNK_LINES else ""
-        pieces.append(_Block(s, e, block.kind, block.name + suffix))
-    return pieces
+def _block_too_large(lines: list[str], block: _Block) -> bool:
+    line_count = block.end - block.start + 1
+    return (
+        line_count > MAX_CHUNK_LINES
+        or sum(len(line) for line in lines[block.start:block.end + 1])
+        + line_count - 1 > MAX_CHUNK_CHARS
+    )
 
 
+def _bounded_chunks(lines: list[str], block: _Block) -> list[CodeChunk]:
+    """Enforce both budgets after structural splitting, without truncating code.
 
-
+    Prefer whole lines. A single oversized line is sliced into fragments that
+    all retain that source line number, since CodeChunk has no column offsets.
+    """
+    chunks: list[CodeChunk] = []
+    start = block.start
+    while start <= block.end:
+        line = lines[start]
+        if len(line) > MAX_CHUNK_CHARS:
+            for offset in range(0, len(line), MAX_CHUNK_CHARS):
+                chunks.append(CodeChunk(
+                    line[offset:offset + MAX_CHUNK_CHARS], start + 1, start + 1,
+                    block.kind, block.name,
+                ))
+            start += 1
+            continue
+        end = start
+        chars = len(line)
+        while end < block.end and end - start + 1 < MAX_CHUNK_LINES:
+            next_chars = 1 + len(lines[end + 1])  # include the joining newline
+            if chars + next_chars > MAX_CHUNK_CHARS:
+                break
+            chars += next_chars
+            end += 1
+        chunks.append(CodeChunk(
+            "\n".join(lines[start:end + 1]), start + 1, end + 1,
+            block.kind, block.name,
+        ))
+        start = end + 1
+    if len(chunks) > 1:
+        for part, chunk in enumerate(chunks, 1):
+            chunk.name += f" (part {part})"
+    return chunks
 
 # --------------------------------------------------------------------------
 # Public API
@@ -313,8 +352,8 @@ def _python_blocks(text: str) -> list[_Block]:
             continue
         raw_end = _find_py_end(lines, s.line, s.indent)
         block = _Block(_extend_up(lines, s.line, 0), raw_end, s.kind, s.name)
-        if block.end - block.start + 1 > MAX_CHUNK_LINES:
-            split = _split_large_block(lines, block, starts) or _window_split(block)
+        if _block_too_large(lines, block):
+            split = _split_large_block(lines, block, starts[pos + 1:]) or [block]
             blocks.extend(split)
         else:
             blocks.append(block)
@@ -353,8 +392,8 @@ def _brace_blocks(text: str, language: str) -> list[_Block]:
             pos += 1
             continue
         block = _Block(_extend_up(lines, s.line, 0), end, s.kind, s.name)
-        if block.end - block.start + 1 > MAX_CHUNK_LINES:
-            split = _split_large_block(lines, block, starts) or _window_split(block)
+        if _block_too_large(lines, block):
+            split = _split_large_block(lines, block, starts[pos + 1:]) or [block]
             blocks.extend(split)
         else:
             blocks.append(block)
@@ -444,7 +483,7 @@ def _csharp_blocks(text: str) -> list[_Block]:
 
 
 def _csharp_chunk_blocks(blocks: list[_Block]) -> list[_Block]:
-    """Partition type bodies at their members, then bound embedding chunks.
+    """Partition type bodies at their members before bounding embedding chunks.
 
     Symbol lookup uses the original complete scopes; embedding windows must
     never supply the boundaries or synthetic '(part N)' names of a symbol.
@@ -455,19 +494,19 @@ def _csharp_chunk_blocks(blocks: list[_Block]) -> list[_Block]:
         while stack and block.start > stack[-1].end:
             tail = stack.pop()
             if tail.start <= tail.end:
-                pieces.extend(_window_split(tail))
+                pieces.append(tail)
         if stack:
             parent = stack[-1]
             if parent.start < block.start:
-                pieces.extend(_window_split(
+                pieces.append(
                     _Block(parent.start, block.start - 1, parent.kind, parent.name)
-                ))
+                )
             parent.start = block.end + 1
         stack.append(_Block(block.start, block.end, block.kind, block.name))
     while stack:
         tail = stack.pop()
         if tail.start <= tail.end:
-            pieces.extend(_window_split(tail))
+            pieces.append(tail)
     return pieces
 
 
@@ -512,21 +551,10 @@ def chunk_code(text: str, language: str) -> list[CodeChunk]:
         blocks = []
     if not blocks:
         blocks = _window_chunks(text)
-    chunks: list[CodeChunk] = []
-    for b in blocks:
-        content = "\n".join(lines[b.start : b.end + 1])
-        if not content.strip():
-            continue
-        chunks.append(
-            CodeChunk(
-                content=content,
-                start_line=b.start + 1,
-                end_line=b.end + 1,
-                kind=b.kind,
-                name=b.name,
-            )
-        )
-    return chunks
+    # Inner methods, C# members and fallback windows all need the same final
+    # guard: splitting a large parent does not guarantee that its children fit.
+    return [chunk for block in blocks for chunk in _bounded_chunks(lines, block)
+            if chunk.content.strip()]
 
 
 def embed_text(chunk: CodeChunk, rel_path: str, language: str) -> str:

@@ -238,6 +238,20 @@ async def main() -> None:
             assert ctx["relatedTests"] == [] and ctx["indexState"] == "current", ctx
             print(json.dumps(ctx, indent=2))
 
+            # Regression: this real file used to send its entire dense class
+            # in one request and Ollama rejected it for exceeding context.
+            print("\n--- dense search_test.py indexes through real Ollama ---")
+            with tempfile.TemporaryDirectory(prefix="dense_mcp_") as dense_directory:
+                dense_root = Path(dense_directory)
+                (dense_root / "search_test.py").write_text(
+                    (ROOT / "dev" / "search_test.py").read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+                indexed = (await call("index_codebase", directory_path=dense_directory))[0]
+                assert indexed["files_failed"] == 0 and indexed["files_embedded"] == 1, indexed
+                assert indexed["total_chunks"] > 3, indexed
+                print(json.dumps(indexed, indent=2))
+
             print("\n--- get_index_status (after) ---")
             print(json.dumps(await call("get_index_status", directory_path=str(sample)), indent=2))
 

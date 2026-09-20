@@ -76,8 +76,13 @@ INDEXED_EXTENSIONS: frozenset[str] = frozenset(
 MAX_FILE_SIZE_BYTES: int = int(os.environ.get("MAX_FILE_SIZE_BYTES", str(300 * 1024)))
 
 # --- Chunking settings ---------------------------------------------------------
-# Blocks longer than this many lines are split so they stay embeddable.
+# Bound source chunks by both lines and characters. The character budget is a
+# conservative heuristic for dense code, not an exact model token count; the
+# embedding metadata header is added separately.
 MAX_CHUNK_LINES: int = int(os.environ.get("MAX_CHUNK_LINES", "180"))
+MAX_CHUNK_CHARS: int = int(os.environ.get("MAX_CHUNK_CHARS", "4000"))
+if MAX_CHUNK_LINES < 1 or MAX_CHUNK_CHARS < 1:
+    raise ValueError("MAX_CHUNK_LINES and MAX_CHUNK_CHARS must be positive")
 # Fallback line-window chunking for files with no parseable structure blocks.
 FALLBACK_CHUNK_LINES: int = 80
 FALLBACK_CHUNK_OVERLAP: int = 10
