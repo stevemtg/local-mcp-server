@@ -33,10 +33,10 @@ ollama pull nomic-embed-text
 py -m pip install -r requirements.txt   # installs the official `mcp` SDK (>=2.0)
 ```
 
-`requirements.txt` contains a single dependency (`mcp>=2.0.0`), which pulls in
-`anyio`, `httpx`, `pydantic`, etc. Embedding calls use the standard library
+`requirements.txt` declares the MCP v2 SDK, AnyIO, and HTTPX directly.
+Embedding calls use the standard library
 (`urllib.request`); the vector store uses the stdlib `sqlite3` module — there
-are no other runtime dependencies.
+are no additional database dependencies.
 
 ## How it works
 
@@ -210,6 +210,7 @@ search, fix the cause, and run the tests.
 | `EMBED_TIMEOUT_SECONDS` | `60` | Per-request timeout |
 | `EMBED_MAX_RETRIES` | `3` | Retry attempts per embedding |
 | `EMBED_CONCURRENCY` | `4` | Parallel embedding requests |
+| `EMBED_NUM_GPU` | unset | Optional Ollama GPU-layer setting for embeddings; `0` requests CPU-only execution. |
 | `MAX_FILE_SIZE_BYTES` | `307200` | Skip files larger than this |
 | `MAX_CHUNK_LINES` | `180` | Split blocks longer than this |
 | `MAX_CHUNK_CHARS` | `4000` | Maximum source characters per chunk, including newlines; embedding metadata is added separately |
@@ -245,6 +246,55 @@ search, fix the cause, and run the tests.
   models with smaller contexts or unusually token-dense source.
 
 ## Development
+
+### Optional local image generation
+
+Set `IMAGE_MODEL` to enable `generate_image`. Leave it unset to keep the five
+existing tools and disable GPU admission gating. The feature uses a dedicated
+local ComfyUI server and the original Ollama chat model. Required settings:
+
+| Variable | Meaning |
+| --- | --- |
+| `IMAGE_MODEL` | Exact canonical **chat** model name from the agent host, not `EMBED_MODEL`. |
+| `IMAGE_LOAD_OPTIONS` | JSON object with the host's load options, including a positive integer `num_ctx`. |
+| `IMAGE_WORKFLOW_PATH` | Trusted ComfyUI API-format JSON graph. The default mappings are text nodes 6/7, KSampler 3, SaveImage 9. |
+| `IMAGE_OUTPUT_ROOT` | Existing absolute ComfyUI output directory shared with this server. |
+| `IMAGE_STATE_ROOT` | Absolute local state directory shared by every cooperating GPU client. |
+| `IMAGE_VRAM_BUDGET_BYTES` | Measured positive image-generation VRAM budget, including headroom. |
+
+`IMAGE_OLLAMA_URL` and `IMAGE_COMFY_URL` default to loopback ports 11434 and
+8188. `IMAGE_NVIDIA_SMI_PATH` optionally supplies an absolute NVIDIA utility
+path for a conservative physical VRAM check on Windows/WDDM. Additional
+budgets, deadlines, and node mappings are defined in
+[settings.py](image_orchestration/settings.py). Configure an overall MCP tool
+deadline that includes generation **and** restoration; see the
+[architecture plan](docs/comfyui_orchestration/PLAN.md).
+
+The server gates its three embedding/indexing tools, but cannot control an
+external agent host's Ollama calls. Every GPU client must acquire the same
+`gpu_session(settings)` lease and check its recovery journal. The host must
+release its inference lease before dispatching an MCP tool. CPU-only embedding
+deployment is recommended initially: a second GPU-resident embedding model
+causes image preflight to reject the request, even when calls are serialized.
+Do not submit unrelated jobs to the dedicated ComfyUI instance.
+
+Recovery is attempted on startup. A lost unload or submission acknowledgement
+keeps the journal unfinished, blocking GPU admission until a supervisor proves
+that no late backend operation can execute. Recovery also verifies the original
+backend URLs, GPU index, output root, and SaveImage mapping. Older unfinished
+journals without this metadata require audited reconciliation; they are not
+automatically trusted or deleted. Known-job cleanup treats history/output
+discovery as best effort so that it cannot prevent releasing VRAM and reloading
+the chat model.
+
+Offline image tests use mock HTTP backends and do not allocate GPU memory:
+
+```powershell
+python -B dev\image_orchestration_test.py
+python -B dev\image_orchestration_regression_test.py
+```
+
+### Existing tests
 
 ```powershell
 py dev\run_tests.py      # full suite (offline regressions + MCP end-to-end)

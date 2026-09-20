@@ -1,0 +1,4 @@
+__pycache__/
+.image-orchestration/
+workflows/cline-server-settings.json
+workflows/setup-report.json

@@ -11,6 +11,12 @@ EMBED_MODEL: str = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 EMBED_TIMEOUT_SECONDS: float = float(os.environ.get("EMBED_TIMEOUT_SECONDS", "60"))
 EMBED_MAX_RETRIES: int = int(os.environ.get("EMBED_MAX_RETRIES", "3"))
 EMBED_CONCURRENCY: int = int(os.environ.get("EMBED_CONCURRENCY", "4"))
+# Optional placement policy: 0 keeps this server's embedding requests on CPU.
+EMBED_NUM_GPU: int | None = (
+    int(os.environ["EMBED_NUM_GPU"]) if "EMBED_NUM_GPU" in os.environ else None
+)
+if EMBED_NUM_GPU is not None and EMBED_NUM_GPU < 0:
+    raise ValueError("EMBED_NUM_GPU must be nonnegative when set")
 
 # --- Index storage ------------------------------------------------------------
 # Name of the folder created INSIDE each indexed project that holds its state.

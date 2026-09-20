@@ -1,2 +1,4 @@
-# Official Model Context Protocol Python SDK (pins anyio/httpx/pydantic).
-mcp>=2.0.0
+# Runtime APIs target MCP v2; HTTPX and AnyIO are direct dependencies.
+mcp>=2.0.0,<3
+httpx>=0.28.1,<1
+anyio>=4.4,<5

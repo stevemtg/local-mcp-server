@@ -1,6 +1,7 @@
 """Codebase Semantic Index — MCP server entry point (stdio transport).
 
-Exposes five tools to any MCP client (e.g. the Cline extension in VS Code):
+Exposes tools to any MCP client (e.g. the Cline extension in VS Code);
+``generate_image`` is registered only when the operator configures IMAGE_MODEL:
 
 * index_codebase(directory_path)                        -> build/refresh the index
 * semantic_search(query, directory_path, ...)           -> discovery by meaning
@@ -16,11 +17,19 @@ from __future__ import annotations
 
 import logging
 import sys
+from contextlib import asynccontextmanager
 from typing import Annotated
 
-from mcp.server.mcpserver import MCPServer
+import anyio
+import httpx
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import Field
+
+import image_orchestration.tool as image_tool
+from image_orchestration.lease import InferenceGate
+from image_orchestration.orchestrator import Orchestrator
+from image_orchestration.settings import load_settings
 
 from semantic_index.config import (
     DEFAULT_MAX_REFERENCES,
@@ -51,6 +60,26 @@ SearchLimit = Annotated[int, Field(
 )]
 READ_ONLY_ANNOTATIONS = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 
+@asynccontextmanager
+async def _lifespan(_server: MCPServer):
+    """Provide the shared GPU gate, and the orchestrator when the feature is on."""
+    if image_settings is None:
+        yield {"orchestrator": None, "gate": InferenceGate(None)}
+        return
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(30, connect=5), trust_env=False, follow_redirects=False
+    ) as http:
+        orchestrator = Orchestrator(image_settings, http)
+        try:
+            for job in await orchestrator.recover():
+                logger.warning("Recovered interrupted GPU transaction %s", job["request_id"])
+        except Exception:
+            # The journal stays unfinished; every gated call then fails closed
+            # with recovery_required until the operator resolves it.
+            logger.exception("Image orchestration startup recovery failed")
+        yield {"orchestrator": orchestrator, "gate": InferenceGate(image_settings)}
+
+
 server = MCPServer(
     name="codebase-semantic-index",
     instructions=(
@@ -69,12 +98,18 @@ server = MCPServer(
         "get_index_status; index_codebase writes index state and requires task "
         "authorization. Correct invalid arguments before retrying."
     ),
+    lifespan=_lifespan,
 )
 indexer = Indexer()
 
+# Operator opt-in: generate_image is only advertised when IMAGE_MODEL is set.
+image_settings = load_settings()
+if image_settings is not None:
+    image_tool.register(server)
+
 
 @server.tool()
-def index_codebase(directory_path: str) -> dict:
+async def index_codebase(ctx: Context, directory_path: str) -> dict:
     """Index (or incrementally re-index) a project directory. WRITE OPERATION.
 
     Walks the directory recursively (ignoring .git, node_modules, dist, ...),
@@ -85,11 +120,14 @@ def index_codebase(directory_path: str) -> dict:
     project before semantic_search works; re-run to pick up file changes.
     """
     logger.info("index_codebase(%s)", directory_path)
-    return indexer.index_directory(directory_path)
+    gate: InferenceGate = ctx.request_context.lifespan_context["gate"]
+    async with gate.session():
+        return await anyio.to_thread.run_sync(lambda: indexer.index_directory(directory_path))
 
 
 @server.tool(title="Find code by behavior", annotations=READ_ONLY_ANNOTATIONS)
-def semantic_search(
+async def semantic_search(
+    ctx: Context,
     query: Annotated[str, Field(
         min_length=1,
         description="One focused description of the desired implementation, e.g. 'retry failed requests with exponential backoff'."
@@ -125,13 +163,18 @@ def semantic_search(
     state, broaden filters, or rephrase. Search never builds or refreshes an index.
     """
     logger.info("semantic_search(%r, %s, limit=%d)", query, directory_path, limit)
-    return indexer.semantic_search(
-        directory_path, query, limit=limit, path_filter=path_filter, min_score=min_score
-    )
+    gate: InferenceGate = ctx.request_context.lifespan_context["gate"]
+    async with gate.session():
+        return await anyio.to_thread.run_sync(
+            lambda: indexer.semantic_search(
+                directory_path, query, limit=limit, path_filter=path_filter, min_score=min_score
+            )
+        )
 
 
 @server.tool(title="Find similar implementations", annotations=READ_ONLY_ANNOTATIONS)
-def semantic_search_similar(
+async def semantic_search_similar(
+    ctx: Context,
     directory_path: ProjectDirectory,
     path: SourcePath,
     start_line: Annotated[int | None, Field(
@@ -164,9 +207,13 @@ def semantic_search_similar(
     then verify the live source; indexed candidates may be stale.
     """
     logger.info("semantic_search_similar(%s:%s-%s, %s)", path, start_line, end_line, directory_path)
-    return indexer.similar(
-        directory_path, path, start_line=start_line, end_line=end_line, limit=limit
-    )
+    gate: InferenceGate = ctx.request_context.lifespan_context["gate"]
+    async with gate.session():
+        return await anyio.to_thread.run_sync(
+            lambda: indexer.similar(
+                directory_path, path, start_line=start_line, end_line=end_line, limit=limit
+            )
+        )
 
 
 @server.tool(title="Inspect a live symbol", annotations=READ_ONLY_ANNOTATIONS)

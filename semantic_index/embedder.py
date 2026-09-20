@@ -15,6 +15,7 @@ from .config import (
     EMBED_ENDPOINT,
     EMBED_MAX_RETRIES,
     EMBED_MODEL,
+    EMBED_NUM_GPU,
     EMBED_TIMEOUT_SECONDS,
     OLLAMA_URL,
 )
@@ -36,16 +37,23 @@ class OllamaEmbedder:
         timeout: float = EMBED_TIMEOUT_SECONDS,
         max_retries: int = EMBED_MAX_RETRIES,
         concurrency: int = EMBED_CONCURRENCY,
+        num_gpu: int | None = EMBED_NUM_GPU,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
         self.max_retries = max_retries
         self.concurrency = concurrency
+        if num_gpu is not None and (type(num_gpu) is not int or num_gpu < 0):
+            raise ValueError("num_gpu must be a nonnegative integer or None")
+        self.num_gpu = num_gpu
 
     def embed_one(self, text: str) -> list[float]:
         """Embed a single text, retrying transient failures with backoff."""
-        payload = json.dumps({"model": self.model, "prompt": text}).encode("utf-8")
+        body = {"model": self.model, "prompt": text}
+        if self.num_gpu is not None:
+            body["options"] = {"num_gpu": self.num_gpu}
+        payload = json.dumps(body).encode("utf-8")
         url = self.base_url + EMBED_ENDPOINT
         last_exc: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
