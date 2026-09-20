@@ -1,0 +1,5 @@
+# Separate reference dependencies; does not alter the running server.
+# Resolve and lock with the server's tested MCP v2 version before deployment.
+mcp>=2.0,<3
+httpx==0.28.1
+anyio>=4.4,<5
