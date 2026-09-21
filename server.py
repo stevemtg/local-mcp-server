@@ -8,6 +8,7 @@ Exposes tools to any MCP client (e.g. the Cline extension in VS Code);
 * semantic_search_similar(path, directory_path, ...)    -> find similar code
 * get_symbol_context(directory_path, path, line, ...)   -> live-source context pack
 * get_index_status(directory_path)                      -> index health/metadata
+* crop_zoom(image_path, regions, ...)                   -> image detail inspection
 
 Policy: semantic results are CANDIDATES ONLY. The live filesystem is always
 authoritative; findings must be verified by reading current source.
@@ -27,6 +28,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 import image_orchestration.tool as image_tool
+import image_orchestration.crop_tool as crop_tool
 from image_orchestration.lease import InferenceGate
 from image_orchestration.orchestrator import Orchestrator
 from image_orchestration.settings import load_settings
@@ -96,11 +98,15 @@ server = MCPServer(
         "may be stale; scores are similarity, not confidence. Empty results "
         "do not prove absence. If search reports a missing index, check "
         "get_index_status; index_codebase writes index state and requires task "
-        "authorization. Correct invalid arguments before retrying."
+        "authorization. Correct invalid arguments before retrying. "
+        "For image inspection, crop_zoom returns enlarged PNG regions from any local image. "
+        "After generate_image, pass its image_path to crop_zoom and inspect details such as "
+        "hands, faces, and text. Crop zoom uses CPU only and needs no codebase index."
     ),
     lifespan=_lifespan,
 )
 indexer = Indexer()
+crop_tool.register(server)
 
 # Operator opt-in: generate_image is only advertised when IMAGE_MODEL is set.
 image_settings = load_settings()

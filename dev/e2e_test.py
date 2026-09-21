@@ -63,6 +63,7 @@ async def main() -> None:
                 "semantic_search_similar",
                 "get_symbol_context",
                 "get_index_status",
+                "crop_zoom",
             }
             examples = {}
             for tool in tools.tools:

@@ -23,7 +23,12 @@ def register(server) -> None:
             "Generate an image with the configured dedicated ComfyUI workflow, then restore the "
             "original Ollama model to GPU before returning. Returns execution status, absolute "
             "image_path/image_paths, and llm_restored. A recovery_required result blocks further "
-            "GPU work until host supervision resolves the journal."
+            "GPU work until host supervision resolves the journal. "
+            "After generation, inspect the image and use crop_zoom for closer checks of hands, "
+            "faces, anatomy, text, or other small details. Pass the returned image_path as "
+            "crop_zoom's image_path and choose named regions as [x,y,width,height] with "
+            "units='Relative' (0-1 fractions) or units='Pixels'. crop_zoom returns enlarged "
+            "PNG previews and saved paths; visually assess those crops before accepting the image."
         ),
         annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
                                     idempotent_hint=False, open_world_hint=False),

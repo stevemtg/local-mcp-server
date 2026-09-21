@@ -42,7 +42,8 @@ are no additional database dependencies.
 
 | Module | Responsibility |
 | --- | --- |
-| `server.py` | MCP server init + registration of the five tools; stdio transport. |
+| `server.py` | MCP server init and tool registration; stdio transport. |
+| `image_orchestration/crop_tool.py` | CPU-only `crop_zoom` adapter for `tools/crop-zoom.ps1`; returns saved crops and inline PNG previews. |
 | `semantic_index/crawler.py` | Recursive walk (prunes `.git`, `node_modules`, Unity `Library`, `dist`, `__pycache__`, ...), SHA-256 hashing, language detection. |
 | `semantic_index/chunker.py` | Structure-aware chunking: indentation-based blocks for Python, regex header + brace-matched blocks for JS/TS/Go/Rust/Java/Kotlin/C/C++/C#, line-window fallback. Oversized blocks are split per method. |
 | `semantic_index/embedder.py` | Local Ollama client (`POST /api/embeddings`, model `nomic-embed-text`) with retry/backoff and a thread pool. |
@@ -65,6 +66,56 @@ automatic re-embed.
 | `semantic_search_similar` | yes | `directory_path: string`, `path: string`, `start_line?`, `end_line?`, `limit?` | same `results` shape, ranked by similarity to the **current** source at `path` |
 | `get_symbol_context` | yes | `directory_path: string`, `path: string`, `line: int`, `max_references?` (default 12, clamped 1–50) | context pack for the live symbol at `path:line`: `{symbol: {name, kind, startLine, endLine, declaration}, snippet, imports, references, relatedTests, indexState, note}` — built from **live source**; `references` are lexical matches, not proven callers/callees |
 | `get_index_status` | yes | `directory_path: string` | `{indexed, num_files, num_chunks, embedding_model, embedding_dim, created_at, last_indexed_at}` |
+| `crop_zoom` | no (writes new crop PNGs) | `image_path: string`, `regions?`, `units?`, `scale?`, `output_dir?`, `interpolation?`, `include_images?` | source dimensions, crop bounds/dimensions/absolute paths, and inline PNG previews |
+
+### Inspect generated image details
+
+`crop_zoom` is available to every project using this MCP server, even when
+`generate_image` is disabled. It uses Windows PowerShell and System.Drawing
+on the server host, with no GPU, Ollama, ComfyUI, index, or extra Python imaging
+dependency. Reconnect the MCP client after updating the server to discover it.
+
+After `generate_image`, pass its returned `image_path` to `crop_zoom` and select
+details to inspect. The generation tool's published description includes this
+guidance. For example:
+
+```json
+{
+  "image_path": "C:/art/project/generated.png",
+  "regions": {
+    "hand": [0.20, 0.36, 0.32, 0.36],
+    "face": [0.35, 0.10, 0.30, 0.25]
+  },
+  "units": "Relative",
+  "scale": 3
+}
+```
+
+Regions are caller-selected `[x, y, width, height]` rectangles from the top-left;
+the example coordinates are not automatic hand/face detection. `Relative` uses
+fractions of source dimensions and rounds bounds outward; `Pixels` uses integer
+pixel coordinates. Omit `regions` to zoom the full image. `NearestNeighbor` is
+the default interpolation; `HighQualityBilinear` and `HighQualityBicubic` provide
+smoother previews. Use `scale: 1` for unscaled crops.
+
+The caller visually checks the PNGs; the tool does not judge anatomy or quality.
+It supports up to 8 regions and 16 million total output pixels per call, and
+rejects invalid/out-of-bounds crops before writing a batch. Each call saves a
+new batch folder inside `output_dir` (an absolute path), or `crops` beside the
+source by default. Results include absolute paths and pixel bounds for every
+crop. Inline PNGs are limited to 8 MiB per response; `preview_included` identifies
+which are attached. Reduce crop size/scale if a preview is omitted, or set
+`include_images: false` for paths and metadata only.
+
+The same crop implementation is also usable directly in PowerShell:
+
+```powershell
+.\tools\crop-zoom.ps1 -Path .\generated.png -Regions @{ detail = @(100, 200, 160, 180) } -Units Pixels -Scale 3 -OutDir .\inspection
+```
+
+The script defaults to `crops` beside the source, with filenames
+`<source-stem>_<region>.png`; direct script reruns replace matching crop files.
+Use `Get-Help .\tools\crop-zoom.ps1 -Full` for all options.
 
 ### Choosing and calling a search tool
 
@@ -249,8 +300,8 @@ search, fix the cause, and run the tests.
 
 ### Optional local image generation
 
-Set `IMAGE_MODEL` to enable `generate_image`. Leave it unset to keep the five
-existing tools and disable GPU admission gating. The feature uses a dedicated
+Set `IMAGE_MODEL` to enable `generate_image`. Leave it unset to keep the code
+tools and `crop_zoom` available and disable GPU admission gating. The feature uses a dedicated
 local ComfyUI server and the original Ollama chat model. Required settings:
 
 | Variable | Meaning |

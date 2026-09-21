@@ -213,7 +213,8 @@ class Regressions(unittest.TestCase):
             ):
                 async with Client(server.server) as client:
                     listed = await client.list_tools()
-                    self.assertEqual(len(listed.tools), 5)
+                    self.assertEqual(len(listed.tools), 6)
+                    self.assertIn("crop_zoom", {tool.name for tool in listed.tools})
                     for tool in listed.tools:
                         self.assertNotIn("ctx", tool.input_schema.get("properties", {}))
                     for name, args in (("index_codebase", {"directory_path": str(settings.output_root)}),
