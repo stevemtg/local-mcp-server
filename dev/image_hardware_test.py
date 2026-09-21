@@ -40,18 +40,6 @@ async def main():
                 raise RuntimeError("ComfyUI is busy; test will not interrupt it")
             before = (await http.get(settings.ollama_url + "/api/ps")).raise_for_status().json()
             report["models_before"] = before["models"]
-            allowed = {"nomic-embed-text:latest", "qwen2.5-coder:1.5b-base"}
-            foreign = [m["name"] for m in before["models"]
-                       if m["name"] != settings.model and m.get("size_vram", 0) > 0 and m["name"] not in allowed]
-            if foreign:
-                raise RuntimeError(f"Unexpected GPU models; refusing to unload them: {foreign}")
-            for model in before["models"]:
-                if model["name"] in allowed:
-                    r = await http.post(settings.ollama_url + "/api/generate", json={
-                        "model": model["name"], "prompt": "", "stream": False, "keep_alive": 0
-                    }, timeout=90)
-                    r.raise_for_status()
-                    print("Unloaded paused helper:", model["name"], flush=True)
 
         async def monitor():
             while not done.is_set():
@@ -100,6 +88,10 @@ async def main():
             print("Report:", destination, flush=True)
     if report.get("result", {}).get("isError", True):
         raise SystemExit(1)
+    before_models = {(m["name"], m["digest"]) for m in report["models_before"]}
+    after_models = {(m["name"], m["digest"]) for m in report["models_after"]}
+    if not before_models.issubset(after_models):
+        raise SystemExit("Some original Ollama models were not restored")
 
 
 if __name__ == "__main__":

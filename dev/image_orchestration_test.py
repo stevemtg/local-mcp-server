@@ -50,6 +50,8 @@ class FakeUpstream:
                 return httpx.Response(200, json={"models": models})
             if path == "/api/tags":
                 return httpx.Response(200, json={"models": [{"name": MODEL, "digest": DIGEST}]})
+            if path == "/api/show":
+                return httpx.Response(200, json={"capabilities": ["completion"]})
             if path == "/api/generate":
                 body = json.loads(request.content)
                 if body["keep_alive"] == 0:

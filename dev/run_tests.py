@@ -6,7 +6,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 failed = False
-for name in ("dev/smoke_test.py", "dev/chunker_test.py", "dev/csharp_test.py", "dev/search_test.py", "dev/e2e_test.py", "dev/image_orchestration_test.py", "dev/image_orchestration_regression_test.py", "dev/crop_zoom_test.py"):
+for name in ("dev/smoke_test.py", "dev/chunker_test.py", "dev/csharp_test.py", "dev/search_test.py", "dev/e2e_test.py", "dev/image_orchestration_test.py", "dev/image_orchestration_regression_test.py", "dev/image_multimodel_test.py", "dev/crop_zoom_test.py"):
     p = subprocess.run(
         [sys.executable, str(root / name)], capture_output=True,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},

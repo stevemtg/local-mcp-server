@@ -1,6 +1,6 @@
 """The generate_image transaction: unload -> generate -> verify -> restore.
 
-Only journal-prepared flows mutate GPU state. Recovery restores the chat model
+Only journal-prepared flows mutate GPU state. Recovery restores all resident models
 when ownership is known; uncertain transactions keep GPU admission closed.
 """
 from __future__ import annotations
@@ -53,23 +53,38 @@ class Orchestrator:
         return ({x[1] for x in q["queue_running"]},
                 {x[1] for x in q["queue_pending"]})
 
-    async def snapshot(self) -> dict:
-        models = await self.models()
-        matches = [m for m in models if m["name"] == self.s.model]
-        if len(matches) != 1 or matches[0].get("size_vram", 0) <= 0:
-            raise Fault("model_not_resident", "Configured chat model is not GPU-resident")
-        original = matches[0]
-        if any(m["name"] != self.s.model and m.get("size_vram", 0) > 0 for m in models):
-            raise Fault("other_gpu_model", "Move embeddings/other models off this GPU first")
-        if original.get("context_length") != self.s.load_options["num_ctx"]:
-            raise Fault("context_mismatch", "Host num_ctx differs from resident model")
-        if not original.get("digest"):
-            raise Fault("missing_digest", "Runner did not report the resident model digest")
-        return {"name": original["name"], "digest": original["digest"],
-                "size_vram": original["size_vram"],
-                "context_length": original["context_length"],
-                "options": copy.deepcopy(self.s.load_options),
-                "keep_alive": self.s.keep_alive}
+    async def snapshot(self) -> list[dict]:
+        """Record every running Ollama model before changing any residency."""
+        snapshots = []
+        for original in await self.models():
+            name = original["name"]
+            if not original.get("digest"):
+                raise Fault("missing_digest", f"Runner did not report the digest for {name}")
+            context = original.get("context_length")
+            options = {}
+            if name == self.s.model:
+                if context != self.s.load_options["num_ctx"]:
+                    raise Fault("context_mismatch", "Host num_ctx differs from resident model")
+                options = copy.deepcopy(self.s.load_options)
+            elif context is not None and context > 0:
+                options["num_ctx"] = context
+            size_vram = original.get("size_vram", 0)
+            if size_vram == 0:
+                options["num_gpu"] = 0
+            info = await self.request("ollama", "POST", "/api/show", json={"model": name})
+            capabilities = info.get("capabilities", [])
+            endpoint = ("/api/embed" if "embedding" in capabilities
+                        and "completion" not in capabilities else "/api/generate")
+            snapshots.append({"name": name, "digest": original["digest"],
+                              "size_vram": size_vram, "context_length": context,
+                              "options": options, "keep_alive": self.s.keep_alive,
+                              "load_endpoint": endpoint})
+        return snapshots
+
+    @staticmethod
+    def job_snapshots(job: dict) -> list[dict]:
+        # Preserve recovery of journals written before multi-model support.
+        return job["snapshots"] if "snapshots" in job else [job["snapshot"]]
 
     def workflow(self, prompt: str, negative: str, request_id: str) -> dict:
         if not prompt.strip() or len(prompt) > 8000 or len(negative) > 4000:
@@ -84,6 +99,8 @@ class Orchestrator:
         return w
 
     async def unload(self, snapshot: dict, job: dict) -> None:
+        job["unload_unknown"] = True
+        await self.journal.save(job)
         with anyio.fail_after(self.s.unload_seconds):
             await self.request("ollama", "POST", "/api/generate", json={
                 "model": snapshot["name"], "prompt": "", "stream": False, "keep_alive": 0
@@ -91,7 +108,7 @@ class Orchestrator:
             # A failed residency poll is different from an unacknowledged POST.
             job["unload_unknown"] = False
             await self.journal.save(job)
-            while any(m["digest"] == snapshot["digest"] for m in await self.models()):
+            while any(m["name"] == snapshot["name"] for m in await self.models()):
                 await anyio.sleep(self.s.poll_seconds)
 
     async def wait_memory(self, minimum: int, require_idle: bool) -> None:
@@ -187,6 +204,19 @@ class Orchestrator:
                     return
                 await anyio.sleep(self.s.poll_seconds)
 
+    def restored(self, snapshot: dict, models: list[dict]) -> bool:
+        for model in models:
+            if model["name"] != snapshot["name"] or model["digest"] != snapshot["digest"]:
+                continue
+            if (snapshot.get("context_length") is not None
+                    and model.get("context_length") != snapshot["context_length"]):
+                continue
+            vram = model.get("size_vram", 0)
+            if snapshot["size_vram"] == 0:
+                return vram == 0
+            return vram > 0 and vram >= snapshot["size_vram"] - self.s.placement_tolerance_bytes
+        return False
+
     async def reload(self, snapshot: dict) -> None:
         with anyio.fail_after(self.s.reload_seconds):
             tags = (await self.request("ollama", "GET", "/api/tags"))["models"]
@@ -195,11 +225,16 @@ class Orchestrator:
                 raise Fault("model_changed", "Original local model digest is no longer available")
             for attempt in range(3):
                 try:
-                    await self.request("ollama", "POST", "/api/generate", json={
-                        "model": snapshot["name"], "prompt": "", "stream": False,
+                    endpoint = snapshot.get("load_endpoint", "/api/generate")
+                    payload = {
+                        "model": snapshot["name"],
                         "keep_alive": -1 if snapshot["keep_alive"] == "-1" else snapshot["keep_alive"],
                         "options": snapshot["options"]
-                    }, timeout=httpx.Timeout(self.s.reload_seconds, connect=5))
+                    }
+                    payload.update({"input": ""} if endpoint == "/api/embed"
+                                   else {"prompt": "", "stream": False})
+                    await self.request("ollama", "POST", endpoint, json=payload,
+                                       timeout=httpx.Timeout(self.s.reload_seconds, connect=5))
                 except (httpx.TransportError, httpx.HTTPStatusError):
                     # A lost preload response may still have loaded the model.
                     log.warning("Ollama preload attempt %d failed", attempt + 1)
@@ -207,17 +242,13 @@ class Orchestrator:
                     resident = [m for m in await self.models() if m["name"] == snapshot["name"]]
                 except (httpx.TransportError, httpx.HTTPStatusError):
                     resident = []
-                if resident:
-                    m = resident[0]
-                    if (m["digest"] == snapshot["digest"]
-                            and m.get("context_length") == snapshot["context_length"]
-                            and m.get("size_vram", 0) > 0
-                            and m["size_vram"] >= snapshot["size_vram"] - self.s.placement_tolerance_bytes):
-                        return
+                if self.restored(snapshot, resident):
+                    return
                 await anyio.sleep(2**attempt)
-        raise Fault("reload_failed", "Ollama did not restore the original GPU model")
+        raise Fault("reload_failed", f"Ollama did not restore {snapshot['name']}")
 
     async def restore(self, job: dict) -> None:
+        snapshots = self.job_snapshots(job)
         if job.get("recovery_target") != self.recovery_target():
             raise Fault("recovery_target_changed", "Recovery requires the original backend and output configuration")
         if job.get("unload_unknown", True):
@@ -242,8 +273,24 @@ class Orchestrator:
             await self.request("comfy", "POST", "/free", json={
                 "unload_models": True, "free_memory": True
             })
-            await self.wait_memory(job["snapshot"]["size_vram"] + self.s.reload_headroom_bytes, True)
-        await self.reload(job["snapshot"])
+            # Previously restored models may still be resident during recovery.
+            resident = await self.models()
+            needed = sum(s["size_vram"] for s in snapshots if not self.restored(s, resident))
+            await self.wait_memory(needed + self.s.reload_headroom_bytes, True)
+        failures = []
+        for snapshot in snapshots:
+            try:
+                await self.reload(snapshot)
+            except Exception as exc:
+                # Still attempt the remaining models if one cannot be restored.
+                log.exception("Could not restore %s", snapshot["name"])
+                failures.append(exc)
+        if failures:
+            raise failures[0]
+        resident = await self.models()
+        missing = [s["name"] for s in snapshots if not self.restored(s, resident)]
+        if missing:
+            raise Fault("reload_failed", f"Models not resident after restoration: {', '.join(missing)}")
         job["llm_restored"] = True
 
     @staticmethod
@@ -275,8 +322,8 @@ class Orchestrator:
                 return self.result(previous)
             if any(await self.queue()):
                 raise Fault("comfy_busy", "Dedicated ComfyUI queue must be empty before unloading")
-            snapshot = await self.snapshot()
-            job = {"request_id": rid, "fingerprint": fingerprint, "snapshot": snapshot,
+            snapshots = await self.snapshot()
+            job = {"request_id": rid, "fingerprint": fingerprint, "snapshots": snapshots,
                    "recovery_target": self.recovery_target(), "unload_unknown": False,
                    "phase": "prepared", "complete": False, "submission_unknown": False,
                    "comfy_touched": False, "prompt_id": None, "image_paths": [],
@@ -284,14 +331,15 @@ class Orchestrator:
             await self.journal.save(job)  # No GPU mutation without durable recovery data.
             try:
                 job["phase"] = "unloading"
-                job["unload_unknown"] = True
-                await self.journal.save(job)
-                await self.unload(snapshot, job)
+                for snapshot in snapshots:
+                    await self.unload(snapshot, job)
                 job["comfy_touched"] = True
                 job["phase"] = "freeing_before_generation"
                 await self.journal.save(job)
                 await self.request("comfy", "POST", "/free", json={"unload_models": True, "free_memory": True})
                 await self.wait_memory(self.s.image_vram_bytes, True)
+                if await self.models():
+                    raise Fault("models_reloaded", "Ollama models became resident before image submission")
                 job["phase"] = "submitting"
                 job["submission_unknown"] = True
                 await self.journal.save(job)

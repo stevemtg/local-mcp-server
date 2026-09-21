@@ -20,9 +20,11 @@ def register(server) -> None:
         name="generate_image",
         title="Generate a local image",
         description=(
-            "Generate an image with the configured dedicated ComfyUI workflow, then restore the "
-            "original Ollama model to GPU before returning. Returns execution status, absolute "
-            "image_path/image_paths, and llm_restored. A recovery_required result blocks further "
+            "Save the list of all running Ollama models and unload them, generate an image with "
+            "the configured dedicated ComfyUI workflow, then reload the saved models, including "
+            "embedding and completion models. Returns execution status, absolute "
+            "image_path/image_paths, and llm_restored (true only after all saved models are restored). "
+            "A recovery_required result blocks further "
             "GPU work until host supervision resolves the journal. "
             "After generation, inspect the image and use crop_zoom for closer checks of hands, "
             "faces, anatomy, text, or other small details. Pass the returned image_path as "

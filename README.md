@@ -302,7 +302,7 @@ search, fix the cause, and run the tests.
 
 Set `IMAGE_MODEL` to enable `generate_image`. Leave it unset to keep the code
 tools and `crop_zoom` available and disable GPU admission gating. The feature uses a dedicated
-local ComfyUI server and the original Ollama chat model. Required settings:
+local ComfyUI server and automatically manages the running Ollama models. Required settings:
 
 | Variable | Meaning |
 | --- | --- |
@@ -324,10 +324,23 @@ deadline that includes generation **and** restoration; see the
 The server gates its three embedding/indexing tools, but cannot control an
 external agent host's Ollama calls. Every GPU client must acquire the same
 `gpu_session(settings)` lease and check its recovery journal. The host must
-release its inference lease before dispatching an MCP tool. CPU-only embedding
-deployment is recommended initially: a second GPU-resident embedding model
-causes image preflight to reject the request, even when calls are serialized.
+release its inference lease before dispatching an MCP tool.
 Do not submit unrelated jobs to the dedicated ComfyUI instance.
+
+Before generation, the tool queries Ollama's running-model list and saves every
+resident model in the durable journal, including `nomic-embed-text`,
+`qwen2.5-coder:1.5b-base`, and CPU-only models. It unloads each model and confirms
+Ollama is empty before submitting the image. Afterward it releases ComfyUI's
+models and reloads the saved list, using the embedding API for embedding models.
+An empty list is supported; the configured chat model need not already be loaded.
+`llm_restored` means **all** saved models passed the final residency check.
+
+The configured chat model retains `IMAGE_LOAD_OPTIONS`; other models retain
+their reported context length and CPU-only placement, with other options using
+Ollama's model defaults. Ollama does not report all original load options.
+Restored models use `IMAGE_KEEP_ALIVE` (default `10m`). GPU placement is verified
+against each model's original VRAM usage. Allow enough `IMAGE_CLEANUP_SECONDS`
+for the entire list to reload. Cleanup also runs after generation errors or cancellation.
 
 Recovery is attempted on startup. A lost unload or submission acknowledgement
 keeps the journal unfinished, blocking GPU admission until a supervisor proves
@@ -336,13 +349,14 @@ backend URLs, GPU index, output root, and SaveImage mapping. Older unfinished
 journals without this metadata require audited reconciliation; they are not
 automatically trusted or deleted. Known-job cleanup treats history/output
 discovery as best effort so that it cannot prevent releasing VRAM and reloading
-the chat model.
+the saved models. Existing journals containing a single model remain recoverable.
 
 Offline image tests use mock HTTP backends and do not allocate GPU memory:
 
 ```powershell
 python -B dev\image_orchestration_test.py
 python -B dev\image_orchestration_regression_test.py
+python -B dev\image_multimodel_test.py
 ```
 
 ### Existing tests
