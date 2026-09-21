@@ -77,25 +77,39 @@ class Settings:
                 raise ValueError("This local-only feature requires loopback HTTP")
             if u.userinfo or u.query or u.fragment or u.path not in ("", "/"):
                 raise ValueError("Backend URLs must be plain loopback origins without credentials")
-        mapping = ((self.positive_node, "CLIPTextEncode", "text"),
-                   (self.negative_node, "CLIPTextEncode", "text"),
-                   (self.sampler_node, "KSampler", "seed"),
-                   (self.save_node, "SaveImage", "filename_prefix"))
-        if len({node for node, _, _ in mapping}) != len(mapping):
-            raise ValueError("Workflow node mappings must be distinct")
-        try:
-            for node, kind, input_name in mapping:
-                entry = self.workflow[node]
-                if entry["class_type"] != kind or not isinstance(entry["inputs"], dict) or input_name not in entry["inputs"]:
-                    raise ValueError("Workflow node mapping does not match the API graph")
-        except (KeyError, TypeError) as exc:
-            raise ValueError("Workflow node mapping does not match the API graph") from exc
+        self.workflow_bindings()
         if not self.output_root.is_dir():
             raise ValueError("Output root must be an existing ComfyUI output directory")
         if self.nvidia_smi_path is not None:
             probe = Path(self.nvidia_smi_path)
             if not probe.is_absolute() or not probe.is_file():
                 raise ValueError("IMAGE_NVIDIA_SMI_PATH must name an existing absolute executable")
+
+    def workflow_bindings(self) -> tuple[tuple[str, str], ...]:
+        """Validate and resolve positive, negative, seed and filename inputs.
+
+        Qwen Image 2.1 encodes both prompts in one node; sharing that node is
+        safe because the two bindings address different input fields.
+        """
+        roles = (
+            (self.positive_node, {"CLIPTextEncode": "text", "TextEncodeQwenImage21": "prompt"}),
+            (self.negative_node, {"CLIPTextEncode": "text", "TextEncodeQwenImage21": "negative_prompt"}),
+            (self.sampler_node, {"KSampler": "seed"}),
+            (self.save_node, {"SaveImage": "filename_prefix"}),
+        )
+        bindings = []
+        try:
+            for node, supported in roles:
+                entry = self.workflow[node]
+                input_name = supported[entry["class_type"]]
+                if not isinstance(entry["inputs"], dict) or input_name not in entry["inputs"]:
+                    raise ValueError("Workflow node mapping does not match the API graph")
+                bindings.append((node, input_name))
+        except (KeyError, TypeError) as exc:
+            raise ValueError("Workflow node mapping does not match the API graph") from exc
+        if len(set(bindings)) != len(bindings):
+            raise ValueError("Workflow input mappings must be distinct")
+        return tuple(bindings)
 
 
 def _env_float(name: str, default: str) -> float:

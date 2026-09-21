@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import anyio
 import httpx
@@ -40,6 +41,52 @@ class Regressions(unittest.TestCase):
                 async with orch.http:
                     await callback(orch, fake, settings)
         anyio.run(run)
+
+    def test_qwen_workflow_submits_both_prompts_and_restores_model(self):
+        async def case(orch, fake, settings):
+            template = json.loads((Path(__file__).resolve().parents[1] / "workflows/image.json").read_text())
+            orch.s = replace(settings, workflow=template, negative_node="6")
+            original = orch.request
+            submitted = []
+            async def capture(backend, method, path, **kwargs):
+                if path == "/prompt":
+                    submitted.append(kwargs["json"]["prompt"])
+                return await original(backend, method, path, **kwargs)
+            orch.request = capture
+            result = (await orch.execute("A lighthouse", "blurry")).structured_content
+            self.assertEqual(result["status"], "succeeded")
+            self.assertTrue(result["llm_restored"])
+            self.assertEqual(len(submitted), 1)
+            graph = submitted[0]
+            self.assertEqual(graph["6"]["inputs"]["prompt"], "A lighthouse")
+            self.assertEqual(graph["6"]["inputs"]["negative_prompt"], "blurry")
+            self.assertEqual(graph["3"]["inputs"]["positive"], ["6", 0])
+            self.assertEqual(graph["3"]["inputs"]["negative"], ["6", 1])
+            self.assertEqual(graph["3"]["inputs"]["seed"], UUID(result["request_id"]).int % (2**63))
+            self.assertEqual(graph["9"]["inputs"]["filename_prefix"], "mcp/" + result["request_id"])
+            self.assertEqual(template["6"]["inputs"]["prompt"], "")
+            self.assertEqual(template["6"]["inputs"]["negative_prompt"], "")
+            self.assertEqual(template["3"]["inputs"]["seed"], 0)
+        self.run_case(case)
+
+    def test_qwen_requires_correct_mapping_and_both_input_fields(self):
+        with tempfile.TemporaryDirectory() as td:
+            settings = make_settings(Path(td))
+            template = json.loads((Path(__file__).resolve().parents[1] / "workflows/image.json").read_text())
+            with self.assertRaises(ValueError):
+                replace(settings, workflow=template)
+            del template["6"]["inputs"]["negative_prompt"]
+            with self.assertRaises(ValueError):
+                replace(settings, workflow=template, negative_node="6")
+
+    def test_workflow_mutation_is_rejected_before_upstream_requests(self):
+        async def case(orch, fake, settings):
+            settings.workflow["6"]["class_type"] = "UnsupportedEncoder"
+            with self.assertRaises(Fault) as caught:
+                await orch.execute("test")
+            self.assertEqual(caught.exception.code, "invalid_workflow")
+            self.assertEqual(fake.events, [])
+        self.run_case(case)
 
     def test_history_failure_during_cleanup_does_not_prevent_reload(self):
         async def case(orch, fake, settings):

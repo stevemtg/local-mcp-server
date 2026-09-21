@@ -76,17 +76,9 @@ class Orchestrator:
             raise Fault("invalid_input", "Prompt is blank or exceeds the configured limit")
         w = copy.deepcopy(self.s.workflow)
         try:
-            for node in (self.s.positive_node, self.s.negative_node):
-                if w[node]["class_type"] != "CLIPTextEncode":
-                    raise ValueError("Text nodes must be CLIPTextEncode")
-            if w[self.s.sampler_node]["class_type"] != "KSampler":
-                raise ValueError("Sampler must be KSampler")
-            if w[self.s.save_node]["class_type"] != "SaveImage":
-                raise ValueError("Output must be SaveImage")
-            w[self.s.positive_node]["inputs"]["text"] = prompt
-            w[self.s.negative_node]["inputs"]["text"] = negative
-            w[self.s.sampler_node]["inputs"]["seed"] = UUID(request_id).int % (2**63)
-            w[self.s.save_node]["inputs"]["filename_prefix"] = f"mcp/{request_id}"
+            values = (prompt, negative, UUID(request_id).int % (2**63), f"mcp/{request_id}")
+            for (node, input_name), value in zip(self.s.workflow_bindings(), values, strict=True):
+                w[node]["inputs"][input_name] = value
         except (KeyError, TypeError, ValueError) as exc:
             raise Fault("invalid_workflow", "Trusted workflow node mapping is invalid") from exc
         return w
