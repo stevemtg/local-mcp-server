@@ -55,6 +55,9 @@ async def main() -> None:
             initialized = await session.initialize()
             assert "semantic_search_similar" in initialized.instructions
             assert "get_symbol_context" in initialized.instructions
+            assert "crop_zoom" in initialized.instructions
+            assert "check_transparency" in initialized.instructions
+            assert "remove_bg" in initialized.instructions
             tools = await session.list_tools()
             print("TOOLS:", [t.name for t in tools.tools])
             assert set(t.name for t in tools.tools) == {
@@ -64,6 +67,8 @@ async def main() -> None:
                 "get_symbol_context",
                 "get_index_status",
                 "crop_zoom",
+                "check_transparency",
+                "remove_bg",
             }
             examples = {}
             for tool in tools.tools:

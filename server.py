@@ -9,6 +9,8 @@ Exposes tools to any MCP client (e.g. the Cline extension in VS Code);
 * get_symbol_context(directory_path, path, line, ...)   -> live-source context pack
 * get_index_status(directory_path)                      -> index health/metadata
 * crop_zoom(image_path, regions, ...)                   -> image detail inspection
+* check_transparency(image_path)                        -> alpha transparency report
+* remove_bg(image_path, out?, threshold?, edge_width?)  -> white background removal
 
 Policy: semantic results are CANDIDATES ONLY. The live filesystem is always
 authoritative; findings must be verified by reading current source.
@@ -29,6 +31,8 @@ from pydantic import Field
 
 import image_orchestration.tool as image_tool
 import image_orchestration.crop_tool as crop_tool
+import image_orchestration.transparency_tool as transparency_tool
+import image_orchestration.removebg_tool as removebg_tool
 from image_orchestration.lease import InferenceGate
 from image_orchestration.orchestrator import Orchestrator
 from image_orchestration.settings import load_settings
@@ -101,12 +105,21 @@ server = MCPServer(
         "authorization. Correct invalid arguments before retrying. "
         "For image inspection, crop_zoom returns enlarged PNG regions from any local image. "
         "After generate_image, pass its image_path to crop_zoom and inspect details such as "
-        "hands, faces, and text. Crop zoom uses CPU only and needs no codebase index."
+        "hands, faces, and text. Crop zoom uses CPU only and needs no codebase index. "
+        "To verify actual transparency, check_transparency inspects every pixel of a local "
+        "image and reports the alpha channel, transparent/opaque pixel counts, corner pixels, "
+        "and the bounding box of nontransparent content; like crop_zoom it is CPU-only, works "
+        "for any project, and needs no index, ComfyUI, Ollama, or GPU. "
+        "To cut a flat white background out of a sprite, remove_bg flood-fills the "
+        "border-connected near-white background to fully transparent and un-mattes its edges, "
+        "writing a NEW <source-stem>_transparent.png without ever modifying the source."
     ),
     lifespan=_lifespan,
 )
 indexer = Indexer()
 crop_tool.register(server)
+transparency_tool.register(server)
+removebg_tool.register(server)
 
 # Operator opt-in: generate_image is only advertised when IMAGE_MODEL is set.
 image_settings = load_settings()

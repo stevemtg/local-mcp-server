@@ -30,7 +30,13 @@ def register(server) -> None:
             "faces, anatomy, text, or other small details. Pass the returned image_path as "
             "crop_zoom's image_path and choose named regions as [x,y,width,height] with "
             "units='Relative' (0-1 fractions) or units='Pixels'. crop_zoom returns enlarged "
-            "PNG previews and saved paths; visually assess those crops before accepting the image."
+            "PNG previews and saved paths; visually assess those crops before accepting the image. "
+            "Verify actual transparency with check_transparency: pass the same image_path and it "
+            "reports the alpha channel, corner pixels, and counts of transparent versus opaque "
+            "pixels. Prompt wording or a painted checkerboard is not proof of transparency. "
+            "If visual inspection confirms an opaque white/near-white background, call remove_bg with the same image_path "
+            "to flood-fill it into a new <source-stem>_transparent.png, then verify that file "
+            "with check_transparency."
         ),
         annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
                                     idempotent_hint=False, open_world_hint=False),

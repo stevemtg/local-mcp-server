@@ -3,46 +3,79 @@
 Removes a white background from a sprite and cleans white matte from its outline.
 .DESCRIPTION
 Removes near-white background connected to the image border, including diagonal
-gaps. In a narrow band along that background, estimates antialias coverage from
-nearby foreground colors and removes the white contribution from RGB as well as
-alpha. Enclosed white details and translucent artwork are preserved. Almost
-opaque pixels (alpha 250-255) are eligible for cleanup; alpha is never increased.
+gaps, and writes the result to a NEW PNG; the source image is never modified. In
+a narrow band along that background, estimates antialias coverage from nearby
+foreground colors and removes the white contribution from RGB as well as alpha.
+Enclosed white details and translucent artwork are preserved. Almost opaque
+pixels (alpha 250-255) are eligible for cleanup; alpha is never increased.
 Intended for sprites on a flat white/near-white background, not photographs or
 textured backgrounds. Fully enclosed background holes cannot be distinguished
-from white sprite details and are preserved.
+from white sprite details and are preserved. Requires Windows and System.Drawing;
+works with Windows PowerShell 5.1. Runs on CPU with no GPU, ComfyUI, or Ollama
+dependency.
+.PARAMETER SrcPath
+Source image path. Path is an alias. Relative paths use the current directory.
+.PARAMETER Out
+New output PNG path; existing paths are rejected. Defaults to
+<source-stem>_transparent.png beside the source.
 .PARAMETER Threshold
 Minimum R, G, and B values considered background (0-255, default 225).
 .PARAMETER EdgeWidth
 Width in pixels of the edge band to clean (default 2). Increase for a wider
 matte fringe; use 0 for a hard cutout with no edge color correction.
-.PARAMETER Out
-Output PNG path. Defaults to <input-name>_transparent.png beside the input.
+.PARAMETER RequestPath
+JSON request file used by the MCP adapter. Fields: image_path, out, threshold,
+edge_width. Produces structured JSON metadata on stdout.
+.PARAMETER AsJson
+Return machine-readable metadata instead of human-readable lines.
 .EXAMPLE
-.\tools\remove-bg.ps1 -Path .\sprite.png -Out .\sprite-transparent.png
+.\tools\remove-bg.ps1 -Path .\sprite.png
+.EXAMPLE
+.\tools\remove-bg.ps1 -Path .\sprite.png -Out .\sprite-transparent.png -Threshold 240
 #>
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName='Image')]
 param(
-    [Parameter(Mandatory=$true)][string]$Path,
+    [Parameter(Mandatory=$true, Position=0, ParameterSetName='Image')][Alias('Path')][string]$SrcPath,
+    [Parameter(Mandatory=$true, ParameterSetName='Request')][string]$RequestPath,
     [string]$Out,
     [ValidateRange(0, 255)][int]$Threshold = 225,
-    [ValidateRange(0, 16)][int]$EdgeWidth = 2
+    [ValidateRange(0, 16)][int]$EdgeWidth = 2,
+    [switch]$AsJson
 )
 
 $ErrorActionPreference = 'Stop'
-$inputPath = (Resolve-Path -LiteralPath $Path).ProviderPath
+if ($PSCmdlet.ParameterSetName -eq 'Request') {
+    $request = Get-Content -LiteralPath $RequestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $options = @{ SrcPath = $request.image_path }
+    foreach ($pair in @(@('out', 'Out'), @('threshold', 'Threshold'), @('edge_width', 'EdgeWidth'))) {
+        if ($null -ne $request.($pair[0])) { $options[$pair[1]] = $request.($pair[0]) }
+    }
+    & $PSCommandPath @options -AsJson
+    return
+}
+if ($AsJson) { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) }
+$sourcePath = (Resolve-Path -LiteralPath $SrcPath).ProviderPath
 if (-not $Out) {
-    $Out = Join-Path ([System.IO.Path]::GetDirectoryName($inputPath)) (
-        [System.IO.Path]::GetFileNameWithoutExtension($inputPath) + '_transparent.png')
+    $Out = Join-Path ([System.IO.Path]::GetDirectoryName($sourcePath)) (
+        [System.IO.Path]::GetFileNameWithoutExtension($sourcePath) + '_transparent.png')
 }
 $outputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Out)
-if ([string]::Equals($inputPath, $outputPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+if ([string]::Equals($sourcePath, $outputPath, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw 'The output path must be different from the input path.'
+}
+
+if (Test-Path -LiteralPath $outputPath) {
+    throw 'The output path already exists; choose a new PNG path.'
+}
+if ([System.IO.Path]::GetExtension($outputPath) -ine '.png') {
+    throw 'The output path must have a .png extension.'
 }
 
 if (-not ('SpriteBackgroundRemover' -as [type])) {
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -201,7 +234,19 @@ public static class SpriteBackgroundRemover
                     for (int y = 0; y < h; y++)
                         Marshal.Copy(output, y * w, IntPtr.Add(outData.Scan0, y * outData.Stride), w);
                 } finally { outBmp.UnlockBits(outData); }
-                outBmp.Save(outPath, ImageFormat.Png);
+                // Encode beside the destination, then publish without replacing
+                // anything. File.Move also protects concurrent calls and aliases
+                // (hard links, symlinks, or junctions) of existing files.
+                string temporary = Path.Combine(Path.GetDirectoryName(outPath),
+                    ".remove-bg-" + Guid.NewGuid().ToString("N") + ".tmp");
+                try
+                {
+                    using (var stream = new FileStream(temporary, FileMode.CreateNew,
+                                                       FileAccess.Write, FileShare.None))
+                        outBmp.Save(stream, ImageFormat.Png);
+                    File.Move(temporary, outPath);
+                }
+                finally { if (File.Exists(temporary)) File.Delete(temporary); }
             }
             return outPath;
         }
@@ -210,5 +255,17 @@ public static class SpriteBackgroundRemover
 '@ -ReferencedAssemblies System.Drawing
 }
 
-$result = [SpriteBackgroundRemover]::Remove($inputPath, $outputPath, $Threshold, $EdgeWidth)
-Write-Output "Saved: $result"
+if ($AsJson) {
+    . (Join-Path $PSScriptRoot 'image-alpha.ps1')
+    $sourceReport = [SpriteAlphaInspector]::Inspect($sourcePath)
+    $removed = [SpriteBackgroundRemover]::Remove($sourcePath, $outputPath, $Threshold, $EdgeWidth)
+    [ordered]@{
+        status = 'succeeded'
+        source = $sourceReport
+        output = [SpriteAlphaInspector]::Inspect($removed)
+        settings = [ordered]@{ threshold = $Threshold; edge_width = $EdgeWidth }
+    } | ConvertTo-Json -Depth 8 -Compress
+} else {
+    $result = [SpriteBackgroundRemover]::Remove($sourcePath, $outputPath, $Threshold, $EdgeWidth)
+    Write-Output "Saved: $result"
+}

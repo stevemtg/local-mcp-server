@@ -197,6 +197,7 @@ try {
     $result = [System.Drawing.Bitmap]::new($outputPath)
     try { Assert-True ($result.GetPixel(0, 0).A -eq 255) 'Threshold removed a pixel outside the selected range.' }
     finally { $result.Dispose() }
+    $outputPath = Join-Path $testRoot 'threshold-200-out.png'
     & $removeBg -Path $inputPath -Out $outputPath -Threshold 200 | Out-Null
     $result = [System.Drawing.Bitmap]::new($outputPath)
     try { Assert-True ($result.GetPixel(0, 0).A -eq 0) 'Threshold override was ignored.' }

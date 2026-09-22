@@ -44,6 +44,8 @@ are no additional database dependencies.
 | --- | --- |
 | `server.py` | MCP server init and tool registration; stdio transport. |
 | `image_orchestration/crop_tool.py` | CPU-only `crop_zoom` adapter for `tools/crop-zoom.ps1`; returns saved crops and inline PNG previews. |
+| `image_orchestration/transparency_tool.py` | Read-only `check_transparency` adapter for `tools/check-transparency.ps1`; reports per-pixel alpha statistics without writing files. |
+| `image_orchestration/removebg_tool.py` | CPU-only `remove_bg` adapter for `tools/remove-bg.ps1`; flood-fill cutout with edge un-matting written to a NEW PNG; never modifies the source. |
 | `semantic_index/crawler.py` | Recursive walk (prunes `.git`, `node_modules`, Unity `Library`, `dist`, `__pycache__`, ...), SHA-256 hashing, language detection. |
 | `semantic_index/chunker.py` | Structure-aware chunking: indentation-based blocks for Python, regex header + brace-matched blocks for JS/TS/Go/Rust/Java/Kotlin/C/C++/C#, line-window fallback. Oversized blocks are split per method. |
 | `semantic_index/embedder.py` | Local Ollama client (`POST /api/embeddings`, model `nomic-embed-text`) with retry/backoff and a thread pool. |
@@ -67,6 +69,8 @@ automatic re-embed.
 | `get_symbol_context` | yes | `directory_path: string`, `path: string`, `line: int`, `max_references?` (default 12, clamped 1–50) | context pack for the live symbol at `path:line`: `{symbol: {name, kind, startLine, endLine, declaration}, snippet, imports, references, relatedTests, indexState, note}` — built from **live source**; `references` are lexical matches, not proven callers/callees |
 | `get_index_status` | yes | `directory_path: string` | `{indexed, num_files, num_chunks, embedding_model, embedding_dim, created_at, last_indexed_at}` |
 | `crop_zoom` | no (writes new crop PNGs) | `image_path: string`, `regions?`, `units?`, `scale?`, `output_dir?`, `interpolation?`, `include_images?` | source dimensions, crop bounds/dimensions/absolute paths, and inline PNG previews |
+| `check_transparency` | yes | `image_path: string` | `{status, source: {path, width, height, pixel_format, alpha_channel}, corners, alpha: {pixels, transparent, partial, opaque, min_alpha, max_alpha, transparent_fraction, partial_fraction, opaque_fraction}, content_bounds, note}`; fractions are 0–1 |
+| `remove_bg` | no (writes a NEW `<source-stem>_transparent.png`; rejects existing output paths) | `image_path: string`, `out?`, `threshold?` (0–255, default 225), `edge_width?` (0–16, default 2) | `{status, source, output, settings: {threshold, edge_width}, note}`; each image report contains `path`, `width`, `height`, `pixel_format`, `alpha_channel`, `corners`, `alpha`, and `content_bounds` |
 
 ### Inspect generated image details
 
@@ -116,6 +120,69 @@ The same crop implementation is also usable directly in PowerShell:
 The script defaults to `crops` beside the source, with filenames
 `<source-stem>_<region>.png`; direct script reruns replace matching crop files.
 Use `Get-Help .\tools\crop-zoom.ps1 -Full` for all options.
+
+### Verify alpha transparency
+
+`check_transparency` is available to every project using this MCP server, even
+when `generate_image` is disabled. Like `crop_zoom` it uses Windows PowerShell
+and System.Drawing on the server host with no GPU, Ollama, ComfyUI, index, or
+extra Python imaging dependency, and it is strictly read-only: it never writes
+files or alters the inspected image.
+
+After `generate_image`, pass the same `image_path` to `check_transparency`. It
+scans every pixel and reports the source `pixel_format` and whether its format
+or palette carries alpha, the four corner pixel colors, the counts of fully
+transparent (`A=0`), partially transparent (`0<A<255`), and fully opaque
+(`A=255`) pixels with fractions from 0 to 1, and the bounding box of all pixels
+with `A>0` (`content_bounds`, `null` for a fully transparent image). Counts and
+corners alone cannot prove that the intended background is transparent; inspect
+the image too. Artwork can legitimately touch a corner. A painted checkerboard
+does not imply transparency.
+
+```json
+{"image_path": "C:/art/project/generated.png"}
+```
+
+The same inspection is also usable directly in PowerShell:
+
+```powershell
+.\tools\check-transparency.ps1 -Path .\sprite.png
+```
+
+Use `Get-Help .\tools\check-transparency.ps1 -Full` for all options.
+
+### Remove a white background
+
+`remove_bg` is available to every project using this MCP server, even when
+`generate_image` is disabled, and like the other two image tools it needs no
+index, ComfyUI, Ollama, or GPU. It is CPU-only and writes only the new output
+file: the source image is never modified.
+
+When inspection confirms a generated sprite still has an opaque
+white/near-white background, pass that `image_path` to `remove_bg`. It
+flood-fills the border-connected near-white background (including diagonal
+gaps) to fully transparent, then un-mattes the narrow antialiased edge band
+by removing the white contribution from RGB as well as alpha. Enclosed white
+sprite details and translucent artwork are preserved. The output defaults to
+`<source-stem>_transparent.png` beside the source; `threshold` tunes what
+counts as background and `edge_width: 0` cuts hard with no edge correction.
+Existing output paths are rejected, so supply a new `.png` path in `out` for
+repeat calls. Edge cleanup estimates foreground coverage and can change light
+foreground edges; inspect the cutout visually as well as checking its alpha.
+The result reports source/output metadata with alpha counts and
+`content_bounds` — re-verify the new file with `check_transparency`.
+
+```json
+{"image_path": "C:/art/project/generated.png"}
+```
+
+The same removal is also usable directly in PowerShell:
+
+```powershell
+.\tools\remove-bg.ps1 -Path .\sprite.png -Out .\sprite-transparent.png
+```
+
+Use `Get-Help .\tools\remove-bg.ps1 -Full` for all options.
 
 ### Choosing and calling a search tool
 
@@ -301,7 +368,8 @@ search, fix the cause, and run the tests.
 ### Optional local image generation
 
 Set `IMAGE_MODEL` to enable `generate_image`. Leave it unset to keep the code
-tools and `crop_zoom` available and disable GPU admission gating. The feature uses a dedicated
+tools and the `crop_zoom`, `check_transparency`, and `remove_bg` image tools
+available and disable GPU admission gating. The feature uses a dedicated
 local ComfyUI server and automatically manages the running Ollama models. Required settings:
 
 | Variable | Meaning |
@@ -367,5 +435,8 @@ py dev\smoke_test.py     # offline unit smoke: chunker + store (fake vectors)
 py dev\chunker_test.py   # offline chunk-size and indexing regressions
 py dev\csharp_test.py    # offline C# scope and symbol-context regressions
 py dev\search_test.py    # offline search validation, filtering, ranges, and read-only checks
-py dev\e2e_test.py       # full MCP stdio round-trip against real Ollama
+py dev\e2e_test.py        # full MCP stdio round-trip against real Ollama
+py dev\crop_zoom_test.py         # offline crop_zoom regressions (PowerShell/System.Drawing)
+py dev\check_transparency_test.py  # offline check_transparency regressions (PowerShell/System.Drawing)
+py dev\remove_bg_test.py    # offline remove_bg regressions (PowerShell/System.Drawing cutout)
 ```
