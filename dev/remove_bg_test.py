@@ -85,7 +85,7 @@ class RemoveBackground(unittest.TestCase):
                     self.assertEqual((payload["source"]["width"], payload["source"]["height"]), (10, 8))
                     self.assertEqual(payload["settings"], {"threshold": 225, "edge_width": 2})
                     self.assertEqual(payload["output"]["path"].lower(),
-                                     str(source.with_name("sprite_transparent.png")).lower())
+                                     str(source.with_name("sprite_transparent.png").resolve()).lower())
                     self.assertEqual(payload["output"]["alpha"]["pixels"], 80)
                     self.assertEqual(payload["output"]["alpha"]["transparent"], 56)
                     self.assertEqual(payload["output"]["alpha"]["partial"], 1)
@@ -115,7 +115,7 @@ class RemoveBackground(unittest.TestCase):
                     other = Path(td) / "cut out [v2].png"
                     result = await client.call_tool("remove_bg", {"image_path": str(source), "out": str(other)})
                     self.assertFalse(result.is_error, result)
-                    self.assertEqual(result.structured_content["output"]["path"].lower(), str(other).lower())
+                    self.assertEqual(result.structured_content["output"]["path"].lower(), str(other.resolve()).lower())
                     self.assertTrue(other.is_file())
                     for args in ({"image_path": str(source), "out": str(source)},
                                  {"image_path": str(source), "out": "relative-out.png"}):

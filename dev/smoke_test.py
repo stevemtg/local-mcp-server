@@ -143,7 +143,7 @@ CTX_MULTILINE = (
     "    return 0\n"
 )
 
-ctx_root = Path(tempfile.mkdtemp(prefix="ctx_project_"))
+ctx_root = Path(tempfile.mkdtemp(prefix="ctx_project_")).resolve()
 (ctx_root / "service.py").write_text(CTX_SERVICE, encoding="utf-8")
 (ctx_root / "caller.py").write_text(CTX_CALLER, encoding="utf-8")
 (ctx_root / "notes.py").write_text(CTX_NOTES, encoding="utf-8")

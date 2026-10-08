@@ -76,7 +76,7 @@ class CropZoom(unittest.TestCase):
                     result = await client.call_tool("crop_zoom", arguments)
                     self.assertFalse(result.is_error, result)
                     payload = result.structured_content
-                    self.assertEqual(payload["source"]["path"], str(source))
+                    self.assertEqual(payload["source"]["path"], str(source.resolve()))
                     self.assertEqual(len(payload["images"]), 2)
                     previews = [c for c in result.content if c.type == "image"]
                     self.assertEqual(len(previews), 2)

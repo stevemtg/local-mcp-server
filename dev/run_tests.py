@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Keep Unicode diagnostics readable on Windows consoles and in captured output.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--offline", action="store_true", help="Skip live Ollama e2e tests")
@@ -17,9 +19,9 @@ for name in ("dev/smoke_test.py", "dev/chunker_test.py", "dev/csharp_test.py", "
     p = subprocess.run(
         [sys.executable, str(root / name)], capture_output=True,
         cwd=root,
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8"},
     )
-    out = (p.stdout + p.stderr).decode(errors="replace").splitlines()
+    out = (p.stdout + p.stderr).decode("utf-8", errors="replace").splitlines()
     print(name, "EXIT", p.returncode)
     for line in (out if p.returncode else out[-4:]):
         print("   |", line)

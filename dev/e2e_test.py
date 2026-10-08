@@ -43,7 +43,7 @@ export function parseConfig(raw: string) {
 
 
 async def main() -> None:
-    sample = Path(tempfile.mkdtemp(prefix="sample_project_"))
+    sample = Path(tempfile.mkdtemp(prefix="sample_project_")).resolve()
     (sample / "app.py").write_text(SAMPLE_PY, encoding="utf-8")
     (sample / "config.ts").write_text(SAMPLE_TS, encoding="utf-8")
     csharp_source = (ROOT / "dev" / "fixtures" / "scopes.cs").read_text(encoding="utf-8")
