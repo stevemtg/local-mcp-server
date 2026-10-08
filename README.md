@@ -1,442 +1,226 @@
-# Codebase Semantic Index (local MCP server)
+# Local MCP Server
 
-A **fully offline** Model Context Protocol (MCP) server that gives any MCP client
-(e.g. the **Cline** extension in VS Code) semantic code search over local
-projects. Everything runs on your machine: embeddings come from a local
-[Ollama](https://ollama.com) instance running `nomic-embed-text`, and vectors
-are persisted in a per-project, file-based SQLite database.
+**Give your local AI model the ability to generate images with ComfyUI.**
 
+Cloud assistants can do more than chat: they can use tools to create images and
+work with your code. This MCP server brings those capabilities to local models,
+taking them one step closer to keeping up with cloud models while the work stays
+on your machine. Connect a tool-capable local model through an MCP client such as
+Cline, and it can generate an image, inspect the details, check transparency,
+remove a white background, and search your codebase by meaning.
+
+ComfyUI runs the image workflow. Ollama runs your local models. This server
+connects them and coordinates GPU memory: it saves the list of running Ollama
+models, unloads them for image generation, then reloads them when the job ends.
+Once the dependencies and model files are installed, these tools can run locally
+without a cloud inference API.
+
+![A local model and MCP client connect to nine tools for ComfyUI generation, image inspection, and semantic code search. Generation unloads Ollama models, runs ComfyUI, then restores the models.](docs/assets/mcp-tools.svg)
+
+[Get started](#get-started) · [All tools](#mcp-tools) ·
+[Image setup](workflows/README.md) · [Tool reference](docs/tool-reference.md) ·
+[Development](#development)
+
+## What it adds to your local assistant
+
+- **Image generation through ComfyUI.** Run a configured local workflow from a
+  prompt, with durable job tracking and Ollama model restoration.
+- **Image inspection and cleanup.** Enlarge selected details, measure real alpha
+  transparency, and turn a border-connected white background into a new cutout PNG.
+- **Code search by meaning.** Find implementations from a description, look for
+  similar code, and inspect live symbols before editing.
+- **Local storage.** Images stay in your ComfyUI output directory; code embeddings
+  live in a SQLite database inside each indexed project.
+
+## Get started
+
+### 1. Install the server
+
+Use **Python 3.10+**; development and CI use Python 3.13. The image inspection
+tools require **Windows PowerShell and System.Drawing** on the server machine.
+The commands below use Windows PowerShell.
+
+```powershell
+git clone https://github.com/stevemtg/local-mcp-server.git
+cd local-mcp-server
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
-┌────────────┐  stdio JSON-RPC  ┌─────────────────────────────────────────┐
-│   Cline    │◀═══════════════▶│  server.py  (MCPServer, transport=stdio)│
-│ (VS Code)  │                 ├──────────┬──────────┬─────────┬─────────┤
-└────────────┘                 │ crawler  │ chunker  │embedder │ store   │
-                               │ (walk +  │ (AST-ish │ (Ollama │(SQLite +│
-                               │  SHA-256)│ blocks)  │ /api/   │ cosine) │
-                               └──────────┴──────────┴─────────┴─────────┘
-                                                      │ HTTP
-                                             http://localhost:11434 (Ollama)
-```
 
-## Requirements
-
-- Python **3.10+** (developed on 3.13)
-- [Ollama](https://ollama.com) running locally with the embedding model:
+For semantic search, install [Ollama](https://ollama.com), start it locally, and
+download the embedding model:
 
 ```powershell
 ollama pull nomic-embed-text
 ```
 
-## Install
+For image generation, you also need a dedicated local
+[ComfyUI](https://github.com/Comfy-Org/ComfyUI) instance, an API-format workflow,
+the model files and nodes that workflow uses, and enough GPU memory to run it.
+The repository includes three [example workflows](workflows/README.md); model
+weights are downloaded separately.
 
-```powershell
-py -m pip install -r requirements.txt   # installs the official `mcp` SDK (>=2.0)
-```
+### 2. Connect your MCP client
 
-`requirements.txt` declares the MCP v2 SDK, AnyIO, and HTTPX directly.
-Embedding calls use the standard library
-(`urllib.request`); the vector store uses the stdlib `sqlite3` module — there
-are no additional database dependencies.
-
-## How it works
-
-| Module | Responsibility |
-| --- | --- |
-| `server.py` | MCP server init and tool registration; stdio transport. |
-| `image_orchestration/crop_tool.py` | CPU-only `crop_zoom` adapter for `tools/crop-zoom.ps1`; returns saved crops and inline PNG previews. |
-| `image_orchestration/transparency_tool.py` | Read-only `check_transparency` adapter for `tools/check-transparency.ps1`; reports per-pixel alpha statistics without writing files. |
-| `image_orchestration/removebg_tool.py` | CPU-only `remove_bg` adapter for `tools/remove-bg.ps1`; flood-fill cutout with edge un-matting written to a NEW PNG; never modifies the source. |
-| `semantic_index/crawler.py` | Recursive walk (prunes `.git`, `node_modules`, Unity `Library`, `dist`, `__pycache__`, ...), SHA-256 hashing, language detection. |
-| `semantic_index/chunker.py` | Structure-aware chunking: indentation-based blocks for Python, regex header + brace-matched blocks for JS/TS/Go/Rust/Java/Kotlin/C/C++/C#, line-window fallback. Oversized blocks are split per method. |
-| `semantic_index/embedder.py` | Local Ollama client (`POST /api/embeddings`, model `nomic-embed-text`) with retry/backoff and a thread pool. |
-| `semantic_index/store.py` | SQLite vector store in `<project>/.semantic_index/index.db`; float32-packed embeddings, cosine scoring + MMR (maximal marginal relevance) diversification. |
-| `semantic_index/indexer.py` | Orchestration: change detection by hash, chunk+embed changed files, stale-entry cleanup, agent-friendly result shaping, status. |
-| `semantic_index/symbol_context.py` | Read-only context packs for `get_symbol_context`: live-source symbol selection, import extraction, lexical reference scanning, test grouping, freshness — no embeddings, no writes. |
-
-Index state lives **inside the indexed project** at `<project>/.semantic_index/`
-(`index.db` plus SQLite WAL sidecar files). Re-running `index_codebase`
-re-embeds only files whose SHA-256 content hash changed; files that were
-deleted are removed from the index. Changing `EMBED_MODEL` triggers a full
-automatic re-embed.
-
-## MCP tools
-
-| Tool | Read-only? | Parameters | Returns |
-| --- | --- | --- | --- |
-| `index_codebase` | no (writes `.semantic_index/`) | `directory_path: string` | `{files_embedded, files_unchanged_skipped, files_removed, files_failed, total_chunks, full_reindex, indexed_at}` |
-| `semantic_search` | yes | `query: string`, `directory_path: string`, `limit?`, `path_filter?`, `min_score?` | `{results: [{path, absolutePath, startLine, endLine, symbol, score, snippet, reason}]}` |
-| `semantic_search_similar` | yes | `directory_path: string`, `path: string`, `start_line?`, `end_line?`, `limit?` | same `results` shape, ranked by similarity to the **current** source at `path` |
-| `get_symbol_context` | yes | `directory_path: string`, `path: string`, `line: int`, `max_references?` (default 12, clamped 1–50) | context pack for the live symbol at `path:line`: `{symbol: {name, kind, startLine, endLine, declaration}, snippet, imports, references, relatedTests, indexState, note}` — built from **live source**; `references` are lexical matches, not proven callers/callees |
-| `get_index_status` | yes | `directory_path: string` | `{indexed, num_files, num_chunks, embedding_model, embedding_dim, created_at, last_indexed_at}` |
-| `crop_zoom` | no (writes new crop PNGs) | `image_path: string`, `regions?`, `units?`, `scale?`, `output_dir?`, `interpolation?`, `include_images?` | source dimensions, crop bounds/dimensions/absolute paths, and inline PNG previews |
-| `check_transparency` | yes | `image_path: string` | `{status, source: {path, width, height, pixel_format, alpha_channel}, corners, alpha: {pixels, transparent, partial, opaque, min_alpha, max_alpha, transparent_fraction, partial_fraction, opaque_fraction}, content_bounds, note}`; fractions are 0–1 |
-| `remove_bg` | no (writes a NEW `<source-stem>_transparent.png`; rejects existing output paths) | `image_path: string`, `out?`, `threshold?` (0–255, default 225), `edge_width?` (0–16, default 2) | `{status, source, output, settings: {threshold, edge_width}, note}`; each image report contains `path`, `width`, `height`, `pixel_format`, `alpha_channel`, `corners`, `alpha`, and `content_bounds` |
-
-### Inspect generated image details
-
-`crop_zoom` is available to every project using this MCP server, even when
-`generate_image` is disabled. It uses Windows PowerShell and System.Drawing
-on the server host, with no GPU, Ollama, ComfyUI, index, or extra Python imaging
-dependency. Reconnect the MCP client after updating the server to discover it.
-
-After `generate_image`, pass its returned `image_path` to `crop_zoom` and select
-details to inspect. The generation tool's published description includes this
-guidance. For example:
-
-```json
-{
-  "image_path": "C:/art/project/generated.png",
-  "regions": {
-    "hand": [0.20, 0.36, 0.32, 0.36],
-    "face": [0.35, 0.10, 0.30, 0.25]
-  },
-  "units": "Relative",
-  "scale": 3
-}
-```
-
-Regions are caller-selected `[x, y, width, height]` rectangles from the top-left;
-the example coordinates are not automatic hand/face detection. `Relative` uses
-fractions of source dimensions and rounds bounds outward; `Pixels` uses integer
-pixel coordinates. Omit `regions` to zoom the full image. `NearestNeighbor` is
-the default interpolation; `HighQualityBilinear` and `HighQualityBicubic` provide
-smoother previews. Use `scale: 1` for unscaled crops.
-
-The caller visually checks the PNGs; the tool does not judge anatomy or quality.
-It supports up to 8 regions and 16 million total output pixels per call, and
-rejects invalid/out-of-bounds crops before writing a batch. Each call saves a
-new batch folder inside `output_dir` (an absolute path), or `crops` beside the
-source by default. Results include absolute paths and pixel bounds for every
-crop. Inline PNGs are limited to 8 MiB per response; `preview_included` identifies
-which are attached. Reduce crop size/scale if a preview is omitted, or set
-`include_images: false` for paths and metadata only.
-
-The same crop implementation is also usable directly in PowerShell:
-
-```powershell
-.\tools\crop-zoom.ps1 -Path .\generated.png -Regions @{ detail = @(100, 200, 160, 180) } -Units Pixels -Scale 3 -OutDir .\inspection
-```
-
-The script defaults to `crops` beside the source, with filenames
-`<source-stem>_<region>.png`; direct script reruns replace matching crop files.
-Use `Get-Help .\tools\crop-zoom.ps1 -Full` for all options.
-
-### Verify alpha transparency
-
-`check_transparency` is available to every project using this MCP server, even
-when `generate_image` is disabled. Like `crop_zoom` it uses Windows PowerShell
-and System.Drawing on the server host with no GPU, Ollama, ComfyUI, index, or
-extra Python imaging dependency, and it is strictly read-only: it never writes
-files or alters the inspected image.
-
-After `generate_image`, pass the same `image_path` to `check_transparency`. It
-scans every pixel and reports the source `pixel_format` and whether its format
-or palette carries alpha, the four corner pixel colors, the counts of fully
-transparent (`A=0`), partially transparent (`0<A<255`), and fully opaque
-(`A=255`) pixels with fractions from 0 to 1, and the bounding box of all pixels
-with `A>0` (`content_bounds`, `null` for a fully transparent image). Counts and
-corners alone cannot prove that the intended background is transparent; inspect
-the image too. Artwork can legitimately touch a corner. A painted checkerboard
-does not imply transparency.
-
-```json
-{"image_path": "C:/art/project/generated.png"}
-```
-
-The same inspection is also usable directly in PowerShell:
-
-```powershell
-.\tools\check-transparency.ps1 -Path .\sprite.png
-```
-
-Use `Get-Help .\tools\check-transparency.ps1 -Full` for all options.
-
-### Remove a white background
-
-`remove_bg` is available to every project using this MCP server, even when
-`generate_image` is disabled, and like the other two image tools it needs no
-index, ComfyUI, Ollama, or GPU. It is CPU-only and writes only the new output
-file: the source image is never modified.
-
-When inspection confirms a generated sprite still has an opaque
-white/near-white background, pass that `image_path` to `remove_bg`. It
-flood-fills the border-connected near-white background (including diagonal
-gaps) to fully transparent, then un-mattes the narrow antialiased edge band
-by removing the white contribution from RGB as well as alpha. Enclosed white
-sprite details and translucent artwork are preserved. The output defaults to
-`<source-stem>_transparent.png` beside the source; `threshold` tunes what
-counts as background and `edge_width: 0` cuts hard with no edge correction.
-Existing output paths are rejected, so supply a new `.png` path in `out` for
-repeat calls. Edge cleanup estimates foreground coverage and can change light
-foreground edges; inspect the cutout visually as well as checking its alpha.
-The result reports source/output metadata with alpha counts and
-`content_bounds` — re-verify the new file with `check_transparency`.
-
-```json
-{"image_path": "C:/art/project/generated.png"}
-```
-
-The same removal is also usable directly in PowerShell:
-
-```powershell
-.\tools\remove-bg.ps1 -Path .\sprite.png -Out .\sprite-transparent.png
-```
-
-Use `Get-Help .\tools\remove-bg.ps1 -Full` for all options.
-
-### Choosing and calling a search tool
-
-- Use `semantic_search` for one behavior described in words, such as
-  `retry failed requests with exponential backoff`. Use
-  `semantic_search_similar` for implementations resembling an existing file
-  or complete method. Use exact search for known identifiers and strings.
-- Both searches need an existing index and the configured Ollama embedding
-  model. They never create or refresh a project index. A missing/empty index
-  returns an empty result with guidance; an incompatible model raises an
-  error explaining how to re-index. `get_index_status` reports stored index
-  metadata; it does not check every live file for changes.
-- `limit` accepts **1–50** (default **8**, configurable). `path_filter` accepts
-  project-relative globs or segments, such as `src/auth/*`, `*.cs`, or `tests`.
-  `min_score` is an optional cosine threshold from **-1 to 1**; omit it initially.
-  Scores measure similarity, not confidence. Semantic search balances
-  relevance and diversity, so results need not have descending scores.
-- Similarity search requires a project-relative `path` and reads live source,
-  even if that file is unindexed. Bounds are **1-based and inclusive**;
-  `start_line` defaults to 1 and `end_line` defaults to EOF independently.
-  Invalid, reversed, or out-of-file ranges raise errors. The returned `range`
-  contains resolved bounds, or `null` when both were omitted.
-- Similarity search excludes overlapping chunks in the query file; a whole-file
-  query excludes that entire file, including stale chunks past the current EOF.
-  Results are deduplicated using their best cosine score. Large queries use at
-  most `SIMILAR_QUERY_MAX_PARTS` chunks; the response `note` reports any cap.
-- Result symbols, snippets, and line numbers come from the stored index.
-  Existing indexes can retain older chunk labels after a parser update.
-  Follow promising hits with `get_symbol_context` and read the live file.
-  Empty results do not establish absence: check index state, broaden filters,
-  or rephrase the query.
-
-All three discovery/context tools publish parameter descriptions, input examples,
-and MCP `readOnlyHint`/`openWorldHint` annotations through `tools/list`.
-Search limits and line numbers carry validation constraints; `max_references`
-keeps its documented clamping behavior.
-
-## Intended workflow (hybrid search policy)
-
-```text
-semantic discovery → symbol context → exact source verification → conclusion → edit → validate
-```
-
-- **Semantic search** (`semantic_search`, `semantic_search_similar`) is for
-  *discovery*: unknown implementation locations, code located by concept,
-  similar functionality, cross-cutting behavior. Results are **candidates
-  only** — small, diverse (MMR) lists of paths + line ranges + symbols.
-- **Exact search** (grep/`rg`, symbol lookup, references) is for known names:
-  functions, classes, imports, callers, routes, constants, error messages,
-  config keys, exact strings.
-- **Source reading** (`read_file` on the live file) determines what the code
-  actually does. **The filesystem is authoritative: if indexed content and the
-  current source disagree, the current source wins.** Always read the current
-  file before editing.
-- **Symbol context** (`get_symbol_context`, read-only) is the step *after*
-  semantic discovery and *before* editing: given a known `file:line`, it
-  returns a live-source context pack — the containing symbol (name, kind,
-  range, declaration, snippet), the file's imports, exact lexical
-  `references` (identifier matches sorted by path/line), `relatedTests`,
-  and `indexState` freshness. Its references are lexical candidates only —
-  never describe them as proven callers or callees.
-- **Validation** via tests / build / lint / typecheck after changes.
-
-A copy of this policy ships as `.clinerules/10-semantic-code-search.md` —
-copy that file (or point Cline's rules at it) in projects where you want the
-behavior enforced.
-
-## Cline / VS Code configuration
-
-### Instructions for a local chat model
-
-The three tool descriptions are self-contained: each states when to use it,
-gives a JSON argument example, describes results, and provides the next step.
-The shared server instructions and
-[Cline rule](.clinerules/10-semantic-code-search.md) use the same routing:
-
-| Task | Tool |
-| --- | --- |
-| Find an implementation from a behavior | `semantic_search` |
-| Find implementations resembling known code | `semantic_search_similar` |
-| Inspect a known file and line | `get_symbol_context` directly |
-
-- Cline's conversational model and the MCP server's Ollama embedding model
-  are configured separately. The searches use the server's `EMBED_MODEL`;
-  `get_symbol_context` needs neither embeddings nor an existing index.
-- Keep calls focused: start with `limit: 4`, query a complete method for
-  similarity, and omit unused optional arguments. All examples show the
-  tool's argument object; use the calling format supplied by Cline.
-- Input names use `start_line` and `end_line`. A result's `startLine` becomes
-  `line` when calling `get_symbol_context`; use its relative `path`.
-- To use the workflow in another project, copy the rule into that project's
-  `.clinerules/` and enable it in Cline's Rules panel. The rule in this server
-  repository applies to this workspace. Cline reads workspace rules as prompt
-  context, so keep them focused. See [Cline's rules documentation](https://docs.cline.bot/customization/cline-rules).
-- Reconnect the MCP server in Cline after changing `server.py` so it receives
-  the latest descriptions and schemas. The JSON examples are exercised by
-  the MCP end-to-end tests; model-specific tool selection still depends on
-  the chosen local model and its Cline configuration.
-
-### Server connection
-
-Add to Cline's MCP settings (`mcp_settings.json`). Only genuinely read-only
-tools are auto-approved; the stateful `index_codebase` is **not**:
+Add this entry to your client's MCP settings. In Cline, open the MCP server
+configuration. Replace `C:/path/to/local-mcp-server` with your actual clone path.
+Use the virtual environment's interpreter so the client finds the dependencies.
 
 ```json
 {
   "mcpServers": {
     "codebase-semantic-index": {
-      "command": "py",
-      "args": ["E:/local-mcp-semantic-index/server.py"],
+      "command": "C:/path/to/local-mcp-server/.venv/Scripts/python.exe",
+      "args": ["-B", "C:/path/to/local-mcp-server/server.py"],
       "env": {
         "OLLAMA_URL": "http://localhost:11434",
         "EMBED_MODEL": "nomic-embed-text"
-      },
-      "autoApprove": [
-        "semantic_search",
-        "semantic_search_similar",
-        "get_symbol_context",
-        "get_index_status"
-      ]
+      }
     }
   }
 }
 ```
 
-If `py` isn't resolvable from Cline's shell, use the absolute interpreter path,
-e.g. `"command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Python\\Python313\\python.exe"`.
+The connection name `codebase-semantic-index` is retained for existing clients.
+The server uses stdio; the MCP client launches it. Configure your conversational
+model in the client separately from the server's embedding model.
 
-Then, in Cline chat: *"Fix the issue where users occasionally get logged out
-after refreshing their profile"* → Cline should call `semantic_search` with
-focused queries ("profile refresh flow", "session state", "logout"), call
-`get_symbol_context` on the located `file:line` for a live-source context
-pack (symbol, imports, lexical references, related tests), open the returned
-candidate files to verify the real behavior, trace callers with exact
-search, fix the cause, and run the tests.
+### 3. Enable ComfyUI image generation
 
-## Configuration (environment variables)
+`generate_image` is enabled only when `IMAGE_MODEL` and its required settings are
+configured. Add the following keys to the server's `env` above. This example uses
+the bundled SDXL workflow; replace the paths, chat model, context size, and VRAM
+budget with values for your machine.
 
-| Variable | Default | Meaning |
+```json
+{
+  "IMAGE_MODEL": "your-ollama-chat-model:tag",
+  "IMAGE_LOAD_OPTIONS": "{\"num_ctx\":8192}",
+  "IMAGE_WORKFLOW_PATH": "C:/path/to/local-mcp-server/workflows/image-simple.json",
+  "IMAGE_OUTPUT_ROOT": "C:/path/to/ComfyUI/output",
+  "IMAGE_STATE_ROOT": "C:/path/to/local-mcp-server/.image-orchestration",
+  "IMAGE_VRAM_BUDGET_BYTES": "8589934592",
+  "IMAGE_POSITIVE_NODE": "6",
+  "IMAGE_NEGATIVE_NODE": "7",
+  "IMAGE_SAMPLER_NODE": "3",
+  "IMAGE_SAVE_NODE": "9"
+}
+```
+
+`IMAGE_MODEL` is the exact Ollama **chat** model name, and `IMAGE_LOAD_OPTIONS`
+must match the host's load options, including `num_ctx`. The 8 GiB budget above
+is an example, not a measured requirement for every workflow. `IMAGE_OUTPUT_ROOT`
+must already exist and match ComfyUI's actual output directory. Ollama and ComfyUI
+default to loopback ports **11434** and **8188**.
+
+Install `AnythingXL_xl.safetensors` for this example, or change the workflow's
+checkpoint name to an installed compatible SDXL checkpoint. Follow the
+[workflow guide](workflows/README.md) for Qwen Image and Krea alternatives.
+Reconnect the MCP client after updating the configuration. Set its tool timeout
+long enough for unloading, generation, and restoration together.
+
+**GPU coordination matters:** use a dedicated ComfyUI instance and pause other
+applications' Ollama requests during generation unless they participate in the
+shared GPU lease. The server coordinates its own embedding calls but cannot
+pause another application's inference requests. See
+[image generation and recovery](docs/image-generation.md) for the complete contract.
+
+Without these image settings, the five code tools and three CPU image tools are
+still available.
+
+### 4. Try it from your assistant
+
+> Generate an illustration of a small red robot reading beside a plant. Inspect
+> the result and zoom in on its hands before showing me the final image.
+
+The client can call `generate_image` with:
+
+```json
+{
+  "prompt": "A small red robot reading a book beside a potted plant, clean detailed illustration, soft daylight",
+  "negative_prompt": "blurry, distorted, watermark"
+}
+```
+
+The result includes `image_path`, `image_paths`, and `llm_restored`. Pass the
+returned path to `crop_zoom` to inspect details. For a cutout, check the actual
+alpha channel with `check_transparency`; if the background is opaque white,
+use `remove_bg`, then check the new PNG. Visual inspection needs a client/model
+that can view images, or a person reviewing them; these tools do not judge quality.
+
+For code search, ask the assistant to run `index_codebase` on an absolute project
+directory first, then use `semantic_search`. Re-index after source changes to
+refresh the stored snippets and embeddings.
+
+## MCP tools
+
+| Tool | What your assistant can do | Requirements / effects |
 | --- | --- | --- |
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama base URL |
-| `EMBED_MODEL` | `nomic-embed-text` | Embedding model name |
-| `EMBED_TIMEOUT_SECONDS` | `60` | Per-request timeout |
-| `EMBED_MAX_RETRIES` | `3` | Retry attempts per embedding |
-| `EMBED_CONCURRENCY` | `4` | Parallel embedding requests |
-| `EMBED_NUM_GPU` | unset | Optional Ollama GPU-layer setting for embeddings; `0` requests CPU-only execution. |
-| `MAX_FILE_SIZE_BYTES` | `307200` | Skip files larger than this |
-| `MAX_CHUNK_LINES` | `180` | Split blocks longer than this |
-| `MAX_CHUNK_CHARS` | `4000` | Maximum source characters per chunk, including newlines; embedding metadata is added separately |
-| `DEFAULT_SEARCH_LIMIT` | `8` | Default top-K for semantic searches |
-| `SIMILAR_QUERY_MAX_PARTS` | `12` | Maximum source chunks used for a similarity query; a response note reports truncation |
-| `MMR_LAMBDA` | `0.5` | Relevance(1.0) ↔ diversity(0.0) trade-off |
-| `MMR_POOL_FACTOR` | `6` | MMR re-ranks the raw top `limit × factor` hits |
-| `SNIPPET_MAX_LINES` | `24` | Snippets truncated to this many lines |
-| `DEFAULT_MAX_REFERENCES` | `12` | Default cap on `get_symbol_context` references |
-| `MAX_REFERENCES_CAP` | `50` | Hard ceiling for the `max_references` argument |
-| `CONTEXT_SNIPPET_MAX_LINES` | `40` | Max lines in a `get_symbol_context` snippet/window |
-| `CONTEXT_IMPORTS_MAX` | `20` | Max import entries listed per file |
-| `CONTEXT_PREVIEW_MAX_CHARS` | `240` | Char cap for previews and declaration headers |
+| `generate_image` | Generate images with the configured ComfyUI workflow | Opt-in; uses GPU, writes images and recovery state, unloads/restores Ollama models |
+| `crop_zoom` | Save and preview enlarged image regions | Windows CPU; writes new crop PNGs |
+| `check_transparency` | Inspect alpha values, corners, and content bounds | Windows CPU; read-only |
+| `remove_bg` | Remove border-connected white/near-white backgrounds | Windows CPU; writes a new PNG and preserves the source |
+| `index_codebase` | Build or incrementally refresh a project index | Ollama embeddings; writes `.semantic_index/` |
+| `semantic_search` | Find code from a description of its behavior | Existing index and Ollama embeddings; read-only |
+| `semantic_search_similar` | Find code resembling a current file or line range | Existing index and Ollama embeddings; read-only |
+| `get_symbol_context` | Read a live symbol, imports, and lexical references | Local source files; read-only, no index or Ollama needed |
+| `get_index_status` | Check stored index counts, model, and timestamps | Local index metadata; read-only |
 
-## Error handling
+See the [tool reference](docs/tool-reference.md) for arguments, examples, limits,
+and response formats. Semantic hits are candidates: verify the live source before
+editing. A symbol's lexical references are not a proven call graph.
 
-- Files that fail to hash, decode, chunk, or embed are **logged to stderr and
-  skipped** — the MCP process never crashes on a single bad file.
-- All logging goes to **stderr**; stdout carries only JSON-RPC frames.
-- SQLite writes are transactional per file (rollback on failure).
+## How image generation shares the GPU
 
-## Limitations
+1. Acquire the shared GPU lease and record the running Ollama models in a durable journal.
+2. Unload those models, confirm Ollama is empty, and check available VRAM.
+3. Submit the configured ComfyUI workflow and wait for its output.
+4. Release ComfyUI's models, reload the saved Ollama models, and verify residency.
+5. Return the image paths and restoration status to the client.
 
-- Chunking is regex/heuristic based (no tree-sitter): block starts on exotic
-  syntax may be missed and fall back to fixed line-window chunks.
-- Search is a brute-force cosine scan over the SQLite store — perfectly fine
-  for tens of thousands of chunks, not for million-chunk monorepos.
-- Embedding context limits depend on the model and its configuration. Source
-  blocks are split at method boundaries where possible, then bounded by both
-  `MAX_CHUNK_LINES` and `MAX_CHUNK_CHARS`, including fallback chunks and large
-  methods. A single oversized line is split into fragments sharing its line
-  number. The character limit is a heuristic, not a token count; lower it for
-  models with smaller contexts or unusually token-dense source.
+Cleanup also runs after errors or cancellation. If recovery cannot establish a
+safe state, the journal blocks further coordinated GPU work until the issue is
+resolved. `llm_restored: true` means all saved models passed the final residency
+check; it does not mean the server preserved conversational state or every
+unreported Ollama load option.
+
+## Documentation
+
+| Guide | Contents |
+| --- | --- |
+| [ComfyUI workflows](workflows/README.md) | Model files, node mappings, validation, and workflow limitations |
+| [Image generation and recovery](docs/image-generation.md) | Required settings, GPU leases, model restoration, and recovery behavior |
+| [Tool reference](docs/tool-reference.md) | Tool parameters, image examples, and search behavior |
+| [Semantic code search](docs/code-search.md) | Search policy, environment variables, chunking, and limits |
+| [Cline search rule](.clinerules/10-semantic-code-search.md) | Optional rule for discovery, source verification, and editing |
+| [Cline image rule](docs/cline-global-rules/20-image-generation-verification.md) | Optional rule for image inspection and transparency verification |
+| [Orchestration design](docs/comfyui_orchestration/PLAN.md) | Design background and recovery rationale |
 
 ## Development
 
-### Optional local image generation
-
-Set `IMAGE_MODEL` to enable `generate_image`. Leave it unset to keep the code
-tools and the `crop_zoom`, `check_transparency`, and `remove_bg` image tools
-available and disable GPU admission gating. The feature uses a dedicated
-local ComfyUI server and automatically manages the running Ollama models. Required settings:
-
-| Variable | Meaning |
-| --- | --- |
-| `IMAGE_MODEL` | Exact canonical **chat** model name from the agent host, not `EMBED_MODEL`. |
-| `IMAGE_LOAD_OPTIONS` | JSON object with the host's load options, including a positive integer `num_ctx`. |
-| `IMAGE_WORKFLOW_PATH` | Trusted ComfyUI API-format JSON graph. The default mappings are text nodes 6/7, KSampler 3, SaveImage 9. |
-| `IMAGE_OUTPUT_ROOT` | Existing absolute ComfyUI output directory shared with this server. |
-| `IMAGE_STATE_ROOT` | Absolute local state directory shared by every cooperating GPU client. |
-| `IMAGE_VRAM_BUDGET_BYTES` | Measured positive image-generation VRAM budget, including headroom. |
-
-`IMAGE_OLLAMA_URL` and `IMAGE_COMFY_URL` default to loopback ports 11434 and
-8188. `IMAGE_NVIDIA_SMI_PATH` optionally supplies an absolute NVIDIA utility
-path for a conservative physical VRAM check on Windows/WDDM. Additional
-budgets, deadlines, and node mappings are defined in
-[settings.py](image_orchestration/settings.py). Configure an overall MCP tool
-deadline that includes generation **and** restoration; see the
-[architecture plan](docs/comfyui_orchestration/PLAN.md).
-
-The server gates its three embedding/indexing tools, but cannot control an
-external agent host's Ollama calls. Every GPU client must acquire the same
-`gpu_session(settings)` lease and check its recovery journal. The host must
-release its inference lease before dispatching an MCP tool.
-Do not submit unrelated jobs to the dedicated ComfyUI instance.
-
-Before generation, the tool queries Ollama's running-model list and saves every
-resident model in the durable journal, including `nomic-embed-text`,
-`qwen2.5-coder:1.5b-base`, and CPU-only models. It unloads each model and confirms
-Ollama is empty before submitting the image. Afterward it releases ComfyUI's
-models and reloads the saved list, using the embedding API for embedding models.
-An empty list is supported; the configured chat model need not already be loaded.
-`llm_restored` means **all** saved models passed the final residency check.
-
-The configured chat model retains `IMAGE_LOAD_OPTIONS`; other models retain
-their reported context length and CPU-only placement, with other options using
-Ollama's model defaults. Ollama does not report all original load options.
-Restored models use `IMAGE_KEEP_ALIVE` (default `10m`). GPU placement is verified
-against each model's original VRAM usage. Allow enough `IMAGE_CLEANUP_SECONDS`
-for the entire list to reload. Cleanup also runs after generation errors or cancellation.
-
-Recovery is attempted on startup. A lost unload or submission acknowledgement
-keeps the journal unfinished, blocking GPU admission until a supervisor proves
-that no late backend operation can execute. Recovery also verifies the original
-backend URLs, GPU index, output root, and SaveImage mapping. Older unfinished
-journals without this metadata require audited reconciliation; they are not
-automatically trusted or deleted. Known-job cleanup treats history/output
-discovery as best effort so that it cannot prevent releasing VRAM and reloading
-the saved models. Existing journals containing a single model remain recoverable.
-
-Offline image tests use mock HTTP backends and do not allocate GPU memory:
+Run the offline regressions and validate the bundled workflow mappings:
 
 ```powershell
-python -B dev\image_orchestration_test.py
-python -B dev\image_orchestration_regression_test.py
-python -B dev\image_multimodel_test.py
+.\.venv\Scripts\python.exe -B dev/run_tests.py --offline
+.\.venv\Scripts\python.exe -B dev/validate_workflows.py
 ```
 
-### Existing tests
+The offline suite uses mock HTTP backends for GPU orchestration and exercises
+the Windows image tools without loading models. GitHub Actions runs these checks
+on Windows with Python 3.13.
+
+With local Ollama running and `nomic-embed-text` installed, run the full suite,
+including MCP stdio end-to-end tests:
 
 ```powershell
-py dev\run_tests.py      # full suite (offline regressions + MCP end-to-end)
-py dev\smoke_test.py     # offline unit smoke: chunker + store (fake vectors)
-py dev\chunker_test.py   # offline chunk-size and indexing regressions
-py dev\csharp_test.py    # offline C# scope and symbol-context regressions
-py dev\search_test.py    # offline search validation, filtering, ranges, and read-only checks
-py dev\e2e_test.py        # full MCP stdio round-trip against real Ollama
-py dev\crop_zoom_test.py         # offline crop_zoom regressions (PowerShell/System.Drawing)
-py dev\check_transparency_test.py  # offline check_transparency regressions (PowerShell/System.Drawing)
-py dev\remove_bg_test.py    # offline remove_bg regressions (PowerShell/System.Drawing cutout)
+.\.venv\Scripts\python.exe -B dev/run_tests.py
 ```
+
+This suite does not generate a live image. The separate
+`dev/image_hardware_test.py` uses your Cline configuration and real GPU; review
+its requirements and pause other Ollama callers before using it.
+
+The main entry point is `server.py`. Image tools and GPU orchestration live in
+`image_orchestration/`; crawling, chunking, embeddings, and SQLite search live in
+`semantic_index/`. PowerShell image helpers live in `tools/`. Local indexes,
+recovery journals, virtual environments, and temporary images are ignored by Git.

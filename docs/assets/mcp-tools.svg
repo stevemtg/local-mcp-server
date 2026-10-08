@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="850" viewBox="0 0 1120 850" role="img" aria-labelledby="title desc">
+  <title id="title">Local MCP Server: nine tools, one local assistant</title>
+  <desc id="desc">A tool-capable local model connects through an MCP client to the server. Tools: generate_image through ComfyUI; crop_zoom, check_transparency, and remove_bg through Windows CPU helpers; index_codebase, semantic_search, semantic_search_similar, get_symbol_context, and get_index_status for code discovery. Generation records and unloads running Ollama models, runs ComfyUI, then frees image models and restores Ollama models.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#101b30"/><stop offset="1" stop-color="#0b1120"/></linearGradient>
+    <linearGradient id="server" x2="1" y2="0"><stop stop-color="#123e48"/><stop offset="1" stop-color="#15374d"/></linearGradient>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#83a3bc" stroke-width="1.5"/></marker>
+    <style>
+      text { font-family: 'Segoe UI', Arial, sans-serif; fill: #eef5ff; }
+      .muted { fill: #adbed2; font-size: 17px; }
+      .label { font-size: 14px; font-weight: 700; letter-spacing: 2px; }
+      .heading { font-size: 23px; font-weight: 700; }
+      .tool { font-family: Consolas, 'Liberation Mono', monospace; font-size: 18px; }
+      .line { fill: none; stroke: #83a3bc; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1120" height="850" rx="24" fill="url(#bg)"/>
+  <rect x="1" y="1" width="1118" height="848" rx="23" fill="none" stroke="#2d3f56"/>
+  <text x="40" y="43" class="label" style="fill:#64dfc2">LOCAL MCP SERVER</text>
+  <text x="40" y="82" font-size="31" font-weight="700">From local conversation to local creation.</text>
+  <text x="40" y="112" class="muted">ComfyUI image generation, image tools, and code search in one MCP connection.</text>
+
+  <rect x="40" y="145" width="320" height="92" rx="14" fill="#18263c" stroke="#38516d"/>
+  <text x="62" y="181" class="heading">Your local model</text>
+  <text x="62" y="209" class="muted">Tool-capable assistant · Ollama</text>
+  <path d="M362 191 H403" class="line" marker-start="url(#arrow)"/>
+  <rect x="410" y="145" width="260" height="92" rx="14" fill="#18263c" stroke="#38516d"/>
+  <text x="432" y="181" class="heading">MCP client</text>
+  <text x="432" y="209" class="muted">For example, Cline</text>
+  <path d="M674 191 H761" class="line" marker-start="url(#arrow)"/>
+  <text x="694" y="173" font-size="14" style="fill:#adbed2">stdio</text>
+  <rect x="770" y="145" width="310" height="92" rx="14" fill="url(#server)" stroke="#56d6bc"/>
+  <text x="792" y="181" class="heading">Local MCP Server</text>
+  <text x="792" y="209" class="muted">9 tools · local files + backends</text>
+  <path d="M925 237 V266 H209 V292" class="line"/>
+  <path d="M559 266 V292" class="line"/>
+  <path d="M910 266 V292" class="line"/>
+  <circle cx="559" cy="266" r="3" fill="#83a3bc"/>
+  <circle cx="910" cy="266" r="3" fill="#83a3bc"/>
+
+  <rect x="40" y="300" width="338" height="315" rx="16" fill="#112e32" stroke="#35766c"/>
+  <rect x="62" y="323" width="84" height="26" rx="13" fill="#23554e"/>
+  <text x="77" y="342" font-size="13" font-weight="700" style="fill:#88f0d7">CREATE</text>
+  <text x="62" y="382" class="heading">Image generation</text>
+  <text x="62" y="424" class="tool">generate_image</text>
+  <text x="62" y="461" class="muted">Prompt → configured workflow</text>
+  <text x="62" y="488" class="muted">Returns saved image paths</text>
+  <path d="M62 522 H356" stroke="#35766c"/>
+  <text x="62" y="550" font-size="18" font-weight="600" style="fill:#88f0d7">ComfyUI + shared GPU</text>
+  <text x="62" y="579" class="muted">Opt-in · durable recovery journal</text>
+
+  <rect x="390" y="300" width="338" height="315" rx="16" fill="#22263f" stroke="#595680"/>
+  <rect x="412" y="323" width="98" height="26" rx="13" fill="#413c63"/>
+  <text x="427" y="342" font-size="13" font-weight="700" style="fill:#d3c7ff">INSPECT</text>
+  <text x="412" y="382" class="heading">Image utilities</text>
+  <text x="412" y="424" class="tool">crop_zoom</text>
+  <text x="412" y="459" class="tool">check_transparency</text>
+  <text x="412" y="494" class="tool">remove_bg</text>
+  <path d="M412 522 H706" stroke="#595680"/>
+  <text x="412" y="550" font-size="18" font-weight="600" style="fill:#d3c7ff">Windows CPU helpers</text>
+  <text x="412" y="579" class="muted">Local images · no GPU required</text>
+
+  <rect x="740" y="300" width="340" height="315" rx="16" fill="#162b42" stroke="#3b668a"/>
+  <rect x="762" y="323" width="112" height="26" rx="13" fill="#254d6b"/>
+  <text x="777" y="342" font-size="13" font-weight="700" style="fill:#a2d6ff">DISCOVER</text>
+  <text x="762" y="382" class="heading">Code intelligence</text>
+  <text x="762" y="417" class="tool">index_codebase</text>
+  <text x="762" y="440" class="tool">semantic_search</text>
+  <text x="762" y="463" class="tool">semantic_search_similar</text>
+  <text x="762" y="486" class="tool">get_symbol_context</text>
+  <text x="762" y="509" class="tool">get_index_status</text>
+  <path d="M762 522 H1058" stroke="#3b668a"/>
+  <text x="762" y="550" font-size="18" font-weight="600" style="fill:#a2d6ff">Ollama embeddings + SQLite</text>
+  <text x="762" y="579" class="muted">Live source for symbol context</text>
+
+  <text x="40" y="660" class="label" style="fill:#64dfc2">ONE GPU, COORDINATED WORK</text>
+  <rect x="40" y="680" width="310" height="78" rx="12" fill="#18263c" stroke="#38516d"/>
+  <text x="60" y="711" font-size="18" font-weight="600">1  Save + unload Ollama models</text>
+  <text x="60" y="737" class="muted">Make room for the image workflow</text>
+  <path d="M358 719 H397" class="line"/>
+  <rect x="405" y="680" width="310" height="78" rx="12" fill="#153b39" stroke="#35766c"/>
+  <text x="425" y="711" font-size="18" font-weight="600">2  Generate with ComfyUI</text>
+  <text x="425" y="737" class="muted">Run workflow and save the image</text>
+  <path d="M723 719 H762" class="line"/>
+  <rect x="770" y="680" width="310" height="78" rx="12" fill="#18263c" stroke="#38516d"/>
+  <text x="790" y="711" font-size="18" font-weight="600">3  Restore Ollama models</text>
+  <text x="790" y="737" class="muted">Release image models, then reload</text>
+  <text x="40" y="796" class="muted">Generation requires a dedicated ComfyUI instance and coordinated Ollama callers.</text>
+  <circle cx="48" cy="825" r="4" fill="#64dfc2"/>
+  <text x="62" y="831" font-size="15" style="fill:#adbed2">Local execution after setup · Images, embeddings, and recovery state stay on your machine</text>
+</svg>

@@ -1,4 +1,33 @@
+# Python environments, bytecode, and tooling caches
 __pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+
+# Local indexes, GPU recovery state, and generated inspection images
+.semantic_index/
 .image-orchestration/
+/temp/
+
+# Machine-specific configuration and credentials
+.env
+.env.*
+!.env.example
 workflows/cline-server-settings.json
 workflows/setup-report.json
+
+# Local editor and agent state
+/.agents/
+/.codex/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
