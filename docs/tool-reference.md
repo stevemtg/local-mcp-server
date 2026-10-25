@@ -23,6 +23,14 @@ status, absolute `image_path` / `image_paths`, and `llm_restored`. Optional
 | `check_transparency` | yes | `image_path: string` | `{status, source: {path, width, height, pixel_format, alpha_channel}, corners, alpha: {pixels, transparent, partial, opaque, min_alpha, max_alpha, transparent_fraction, partial_fraction, opaque_fraction}, content_bounds, note}`; fractions are 0–1 |
 | `remove_bg` | no (writes a NEW `<source-stem>_transparent.png`; rejects existing output paths) | `image_path: string`, `out?`, `threshold?` (0–255, default 225), `edge_width?` (0–16, default 2) | `{status, source, output, settings: {threshold, edge_width}, note}`; each image report contains `path`, `width`, `height`, `pixel_format`, `alpha_channel`, `corners`, `alpha`, and `content_bounds` |
 
+## Structural graph tools
+
+The complementary structural tools are `codebase_build_relations(directory_path)`,
+`codebase_query_graph(directory_path, target_symbol, relationship_type, limit?)`,
+and `codebase_agentic_navigate(directory_path, current_path, action)`. They need no
+Ollama or vector index. See the [structural graph guide](structural-graph.md) for
+their contracts, semantic-result integration, limits, and examples.
+
 ## Inspect generated image details
 
 `crop_zoom` is available to every project using this MCP server, even when

@@ -29,6 +29,9 @@ without a cloud inference API.
   transparency, and turn a border-connected white background into a new cutout PNG.
 - **Code search by meaning.** Find implementations from a description, look for
   similar code, and inspect live symbols before editing.
+- **Structural code navigation.** Trace imports, calls, inheritance, and engine
+  components, or inspect live file interfaces with the
+  [structural graph tools](docs/structural-graph.md).
 - **Local storage.** Images stay in your ComfyUI output directory; code embeddings
   live in a SQLite database inside each indexed project.
 
@@ -125,7 +128,7 @@ shared GPU lease. The server coordinates its own embedding calls but cannot
 pause another application's inference requests. See
 [image generation and recovery](docs/image-generation.md) for the complete contract.
 
-Without these image settings, the five code tools and three CPU image tools are
+Without these image settings, the eight code tools and three CPU image tools are
 still available.
 
 ### 4. Try it from your assistant
@@ -165,6 +168,12 @@ refresh the stored snippets and embeddings.
 | `semantic_search_similar` | Find code resembling a current file or line range | Existing index and Ollama embeddings; read-only |
 | `get_symbol_context` | Read a live symbol, imports, and lexical references | Local source files; read-only, no index or Ollama needed |
 | `get_index_status` | Check stored index counts, model, and timestamps | Local index metadata; read-only |
+| `codebase_build_relations` | Build imports, calls, inheritance, and component relationships | Local source files; writes `.semantic_index/graph.json` |
+| `codebase_query_graph` | Trace a symbol's dependencies, dependents, or hierarchy | Existing graph; read-only, no Ollama needed |
+| `codebase_agentic_navigate` | List directories or summarize live file interfaces | Local source files; read-only, no graph or index needed |
+| `codebase_build_relations` | Build imports, calls, inheritance, and component relationships | Local source files; writes `.semantic_index/graph.json` |
+| `codebase_query_graph` | Trace a symbol's dependencies, dependents, or hierarchy | Existing graph; read-only, no Ollama needed |
+| `codebase_agentic_navigate` | List directories or summarize live file interfaces | Local source files; read-only, no graph or index needed |
 
 See the [tool reference](docs/tool-reference.md) for arguments, examples, limits,
 and response formats. Semantic hits are candidates: verify the live source before

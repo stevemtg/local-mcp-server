@@ -12,7 +12,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--offline", action="store_true", help="Skip live Ollama e2e tests")
 args = parser.parse_args()
 failed = False
-for name in ("dev/smoke_test.py", "dev/chunker_test.py", "dev/csharp_test.py", "dev/search_test.py", "dev/e2e_test.py", "dev/image_orchestration_test.py", "dev/image_orchestration_regression_test.py", "dev/image_multimodel_test.py", "dev/crop_zoom_test.py", "dev/check_transparency_test.py", "dev/remove_bg_test.py"):
+for name in ("dev/smoke_test.py", "dev/chunker_test.py", "dev/csharp_test.py", "dev/search_test.py", "dev/graph_test.py", "dev/e2e_test.py", "dev/image_orchestration_test.py", "dev/image_orchestration_regression_test.py", "dev/image_multimodel_test.py", "dev/crop_zoom_test.py", "dev/check_transparency_test.py", "dev/remove_bg_test.py"):
     if args.offline and name == "dev/e2e_test.py":
         print(name, "SKIP (requires live Ollama)")
         continue

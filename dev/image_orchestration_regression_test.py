@@ -213,15 +213,21 @@ class Regressions(unittest.TestCase):
             ):
                 async with Client(server.server) as client:
                     listed = await client.list_tools()
-                    self.assertEqual(len(listed.tools), 8)
+                    self.assertEqual(len(listed.tools), 11)
                     self.assertIn("crop_zoom", {tool.name for tool in listed.tools})
                     self.assertIn("check_transparency", {tool.name for tool in listed.tools})
                     self.assertIn("remove_bg", {tool.name for tool in listed.tools})
+                    self.assertIn("codebase_build_relations", {tool.name for tool in listed.tools})
+                    self.assertIn("codebase_query_graph", {tool.name for tool in listed.tools})
+                    self.assertIn("codebase_agentic_navigate", {tool.name for tool in listed.tools})
                     for tool in listed.tools:
                         self.assertNotIn("ctx", tool.input_schema.get("properties", {}))
                     for name, args in (("index_codebase", {"directory_path": str(settings.output_root)}),
                         ("semantic_search", {"directory_path": str(settings.output_root), "query": "test"}),
-                        ("semantic_search_similar", {"directory_path": str(settings.output_root), "path": "img.png"})):
+                        ("semantic_search_similar", {"directory_path": str(settings.output_root), "path": "img.png"}),
+                        ("codebase_build_relations", {"directory_path": str(settings.output_root)}),
+                        ("codebase_query_graph", {"directory_path": str(settings.output_root), "target_symbol": "none"}),
+                        ("codebase_agentic_navigate", {"directory_path": str(settings.output_root), "action": "list_dir", "current_path": ""})):
                         result = await client.call_tool(name, args)
                         self.assertFalse(result.is_error, result)
         self.run_case(case)

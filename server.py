@@ -8,6 +8,9 @@ Exposes tools to any MCP client (e.g. the Cline extension in VS Code);
 * semantic_search_similar(path, directory_path, ...)    -> find similar code
 * get_symbol_context(directory_path, path, line, ...)   -> live-source context pack
 * get_index_status(directory_path)                      -> index health/metadata
+* codebase_build_relations(directory_path)              -> structural graph snapshot
+* codebase_query_graph(directory_path, target_symbol, relationship_type) -> graph trace
+* codebase_agentic_navigate(directory_path, current_path, action) -> live interfaces
 * crop_zoom(image_path, regions, ...)                   -> image detail inspection
 * check_transparency(image_path)                        -> alpha transparency report
 * remove_bg(image_path, out?, threshold?, edge_width?)  -> white background removal
@@ -36,6 +39,8 @@ import image_orchestration.removebg_tool as removebg_tool
 from image_orchestration.lease import InferenceGate
 from image_orchestration.orchestrator import Orchestrator
 from image_orchestration.settings import load_settings
+
+import code_graph.tool as graph_tool
 
 from semantic_index.config import (
     DEFAULT_MAX_REFERENCES,
@@ -112,7 +117,14 @@ server = MCPServer(
         "for any project, and needs no index, ComfyUI, Ollama, or GPU. "
         "To cut a flat white background out of a sprite, remove_bg flood-fills the "
         "border-connected near-white background to fully transparent and un-mattes its edges, "
-        "writing a NEW <source-stem>_transparent.png without ever modifying the source."
+        "writing a NEW <source-stem>_transparent.png without ever modifying the source. "
+        "For structural relationships, codebase_build_relations builds a heuristic graph of "
+        "imports, inheritance, calls, and component attachments (WRITE operation, per project); "
+        "codebase_query_graph then reports dependencies, dependents, and transitive hierarchy "
+        "for a symbol without embeddings or Ollama, and codebase_agentic_navigate follows up "
+        "with live-source list_dir/view_file_summary actions, even before indexing. "
+        "When a graph is built, semantic hits include structural traces. Graph edges are heuristic "
+        "candidates; the live filesystem always stays authoritative."
     ),
     lifespan=_lifespan,
 )
@@ -120,6 +132,7 @@ indexer = Indexer()
 crop_tool.register(server)
 transparency_tool.register(server)
 removebg_tool.register(server)
+graph_router = graph_tool.register(server)
 
 # Operator opt-in: generate_image is only advertised when IMAGE_MODEL is set.
 image_settings = load_settings()
@@ -185,9 +198,9 @@ async def semantic_search(
     gate: InferenceGate = ctx.request_context.lifespan_context["gate"]
     async with gate.session():
         return await anyio.to_thread.run_sync(
-            lambda: indexer.semantic_search(
+            lambda: graph_router.enrich_results(directory_path, indexer.semantic_search(
                 directory_path, query, limit=limit, path_filter=path_filter, min_score=min_score
-            )
+            ))
         )
 
 
@@ -229,9 +242,9 @@ async def semantic_search_similar(
     gate: InferenceGate = ctx.request_context.lifespan_context["gate"]
     async with gate.session():
         return await anyio.to_thread.run_sync(
-            lambda: indexer.similar(
+            lambda: graph_router.enrich_results(directory_path, indexer.similar(
                 directory_path, path, start_line=start_line, end_line=end_line, limit=limit
-            )
+            ))
         )
 
 
