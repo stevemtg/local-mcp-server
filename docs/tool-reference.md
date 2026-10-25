@@ -23,6 +23,23 @@ status, absolute `image_path` / `image_paths`, and `llm_restored`. Optional
 | `check_transparency` | yes | `image_path: string` | `{status, source: {path, width, height, pixel_format, alpha_channel}, corners, alpha: {pixels, transparent, partial, opaque, min_alpha, max_alpha, transparent_fraction, partial_fraction, opaque_fraction}, content_bounds, note}`; fractions are 0–1 |
 | `remove_bg` | no (writes a NEW `<source-stem>_transparent.png`; rejects existing output paths) | `image_path: string`, `out?`, `threshold?` (0–255, default 225), `edge_width?` (0–16, default 2) | `{status, source, output, settings: {threshold, edge_width}, note}`; each image report contains `path`, `width`, `height`, `pixel_format`, `alpha_channel`, `corners`, `alpha`, and `content_bounds` |
 
+## Long-term memory tools
+
+These tools use `<directory_path>/.agent_memory/memory.db` independently of code
+indexes, Ollama and the selected conversational model:
+
+| Tool | Read-only? | Parameters | Returns |
+| --- | --- | --- | --- |
+| `memory_remember` | no | `directory_path`, `key`, `title`, `content`, `category?`, `tags?`, `source?`, `pinned?` | Saved note and revision; identical retries are unchanged, different values under an existing key conflict. |
+| `memory_recall` | yes | `directory_path`, `query?`, `category?`, `tags?`, `limit?`, `offset?` | Previews, provenance, keys and revisions; pagination with `has_more` and `next_offset`. |
+| `memory_get` | yes | `directory_path`, `key` | Full note or `not_found`. |
+| `memory_update` | no | `directory_path`, `key`, `expected_revision`, optional note fields | Updated note or revision conflict; unspecified fields stay unchanged. |
+| `memory_forget` | no; deletes | `directory_path`, `key`, `expected_revision` | `deleted`, `already_absent`, or a revision conflict. |
+
+See the [long-term memory guide](long-term-memory.md) for complete arguments,
+examples, persistence guarantees, limits and the Cline rule. Empty recall queries
+return pinned then recent notes; nonempty queries use local full-text matching.
+
 ## Structural graph tools
 
 The complementary structural tools are `codebase_build_relations(directory_path)`,

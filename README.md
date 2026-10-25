@@ -7,7 +7,8 @@ work with your code. This MCP server brings those capabilities to local models,
 taking them one step closer to keeping up with cloud models while the work stays
 on your machine. Connect a tool-capable local model through an MCP client such as
 Cline, and it can generate an image, inspect the details, check transparency,
-remove a white background, and search your codebase by meaning.
+remove a white background, search your codebase by meaning, and remember project
+decisions and preferences across conversations.
 
 ComfyUI runs the image workflow. Ollama runs your local models. This server
 connects them and coordinates GPU memory: it saves the list of running Ollama
@@ -34,6 +35,9 @@ without a cloud inference API.
   [structural graph tools](docs/structural-graph.md).
 - **Local storage.** Images stay in your ComfyUI output directory; code embeddings
   live in a SQLite database inside each indexed project.
+- **Long-term project memory.** Save and recall decisions, preferences, lessons
+  and session handoffs across models and restarts using the
+  [memory tools](docs/long-term-memory.md), without Ollama or a code index.
 
 ## Get started
 
@@ -128,8 +132,8 @@ shared GPU lease. The server coordinates its own embedding calls but cannot
 pause another application's inference requests. See
 [image generation and recovery](docs/image-generation.md) for the complete contract.
 
-Without these image settings, the eight code tools and three CPU image tools are
-still available.
+Without these image settings, the eight code tools, five memory tools and three
+CPU image tools are still available.
 
 ### 4. Try it from your assistant
 
@@ -171,9 +175,11 @@ refresh the stored snippets and embeddings.
 | `codebase_build_relations` | Build imports, calls, inheritance, and component relationships | Local source files; writes `.semantic_index/graph.json` |
 | `codebase_query_graph` | Trace a symbol's dependencies, dependents, or hierarchy | Existing graph; read-only, no Ollama needed |
 | `codebase_agentic_navigate` | List directories or summarize live file interfaces | Local source files; read-only, no graph or index needed |
-| `codebase_build_relations` | Build imports, calls, inheritance, and component relationships | Local source files; writes `.semantic_index/graph.json` |
-| `codebase_query_graph` | Trace a symbol's dependencies, dependents, or hierarchy | Existing graph; read-only, no Ollama needed |
-| `codebase_agentic_navigate` | List directories or summarize live file interfaces | Local source files; read-only, no graph or index needed |
+| `memory_remember` | Save a durable fact, decision, preference, lesson or handoff | Writes `.agent_memory/memory.db`; no Ollama needed |
+| `memory_recall` | Find previous notes or list pinned/recent memories | Read-only local full-text search |
+| `memory_get` | Read a full memory and its revision | Read-only; works across sessions and models |
+| `memory_update` | Correct a note or refresh a handoff | Writes memory; requires the current revision |
+| `memory_forget` | Delete a saved note and its search entries | Deletes one memory; requires the current revision |
 
 See the [tool reference](docs/tool-reference.md) for arguments, examples, limits,
 and response formats. Semantic hits are candidates: verify the live source before
@@ -201,6 +207,8 @@ unreported Ollama load option.
 | [Image generation and recovery](docs/image-generation.md) | Required settings, GPU leases, model restoration, and recovery behavior |
 | [Tool reference](docs/tool-reference.md) | Tool parameters, image examples, and search behavior |
 | [Semantic code search](docs/code-search.md) | Search policy, environment variables, chunking, and limits |
+| [Long-term memory](docs/long-term-memory.md) | Persistent notes, recall, corrections, forgetting and session handoffs |
+| [Cline memory rule](docs/cline-global-rules/30-long-term-memory.md) | Reusable rule for recalling and saving durable knowledge |
 | [Cline search rule](.clinerules/10-semantic-code-search.md) | Optional rule for discovery, source verification, and editing |
 | [Cline image rule](docs/cline-global-rules/20-image-generation-verification.md) | Optional rule for image inspection and transparency verification |
 | [Orchestration design](docs/comfyui_orchestration/PLAN.md) | Design background and recovery rationale |
